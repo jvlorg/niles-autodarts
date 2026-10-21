@@ -1,39 +1,21 @@
 # Announcement-path feasibility
 
-Status: actual host adapter and audible transport remain unavailable and deferred. The addon now has an injectable policy/request boundary and synthetic recording journey; this is not a Niles binding or executable transport proof.
+The earlier contract research below records why the first implementation had no supported event ingress or speech binding at that time. The checked-in implementation now includes component WebSocket ingress and an optional room-bound Niles speech-stream adapter. Current source and evidence limits are summarized in the [canonical evidence ledger](plan.md#verification-and-proof-boundaries).
 
-## Finding
+## Current checked-in path
 
-Score speech is intended as Piper synthesis → selected satellites. Niles has a real host-owned audio route, but the plugin contract does not expose it. The apparent WIT `notify.say` route is a separate notification feature; its permission/quota must not be treated as a global limit on audio announcements.
+[`component/src/lib.rs`](../component/src/lib.rs) owns an `AnnouncementSession` in `Runtime`. When announcements are enabled, the component initializes the Board Manager WebSocket path; bounded text callbacks for the active connection are passed to the session. The session parses and reduces local collection events, then the component adapter submits eligible utterances through the separately configured, room-bound speech stream and polls request outcomes. Announcement and speech-stream controls default disabled. The pinned [Niles integration WIT](../component/wit/niles-integration.wit) defines the WebSocket and speech-stream imports/callbacks; [`PROVENANCE.md`](../component/wit/PROVENANCE.md) records the contract source and its research state.
 
-Source snapshot: `/home/jleth/projects/niles`, commit `eea62f46f275b31da8517d7f895fe4d0178f543d`, clean working tree when inspected, local branch 41 commits behind its origin tracking ref. This is the exact source basis, not a claim about newer upstream code.
+Configured room/audience values express intent. Niles retains household validation and speech transport authority. Speech submission acceptance means a bounded request was recorded; polling reports transport outcomes. Neither proves that audio played audibly or that a person heard it. The source implementation and mock-import tests do not prove a released compatible host, live Board Manager ordering/miss encoding, or end-to-end audible behavior.
 
-## Actual host route (private functions)
+## Historical host-contract research
 
-Main follow-up: fetched `origin/main` and independently inspected its WIT at `2f4d54b739e001d2e4e1fe4e173bf4400dae476a` without changing the checkout. The newer contract adds MQTT, secrets and inbound interfaces, but its full plugin import list still has no dedicated announcement/Piper/satellite audience interface. `notify.say` remains explicitly notification delivery (lines 389-406), not the requested announcement contract. This updates the contract check only; internal transport references below remain pinned to the local source revision above. New ingress capabilities deserve separate assessment before concluding event delivery is blocked.
+These findings refer to the specifically inspected older Niles source snapshot at `/home/jleth/projects/niles`, commit `eea62f46f275b31da8517d7f895fe4d0178f543d`, with a then-current upstream WIT inspection at `2f4d54b739e001d2e4e1fe4e173bf4400dae476a`. They explain the earlier absence conclusion; they are not current claims about the pinned 0.5.0 contract or a released/installed host.
 
-- `crates/niles-bin/src/main.rs:1312-1410`: `WyomingDelivery` implements the notification delivery callback. It resolves a room, uses the live peer when present, otherwise selects the configured IP, synthesizes via Piper and decodes/resamples PCM.
-- Live connection: `crates/niles-bin/src/speak.rs:386-415`, `speak_back`, performs Piper synthesis, WAV→PCM conversion, satellite format/volume processing and `WyomingSender::send_audio_then`.
-- Idle satellite: `crates/niles-bin/src/push.rs:22-87`, `speak_to`, connects to configured satellite IP on port 10301 and writes Wyoming AudioStart/AudioChunk/AudioStop. Caller is `main.rs:1388-1404`.
-- Live Wyoming transport: `crates/niles-wyoming/src/server.rs:219-301`, `WyomingSender::send_audio_then`.
-- `crates/niles-bin/src/satellites.rs:11-87`, `SatelliteRegistry`, maps configured IPs to room and volume; `ip_for(room)` returns one configured IP. The inspected route is room resolution, not a persisted selected-subset or satellite-ID audience API.
+At that time, `notify.say` was a notification route rather than the requested high-frequency announcement contract, and host-internal code performed Piper synthesis, room resolution, and satellite delivery. Those private functions were not an add-on interface. The old plugin import list lacked the now-pinned WebSocket and speech-stream interfaces. Historical sources included `crates/niles-bin/src/main.rs`, `speak.rs`, `push.rs`, `crates/niles-wyoming/src/server.rs`, and `satellites.rs` in the inspected checkout. Their presence established Niles host behavior, not add-on access to it.
 
-These implementation symbols are host-internal Rust, not exported plugin interfaces. Their existence proves Niles itself can perform these operations, not that an add-on can call them.
+The historical upstream review-ready PR references recorded in [`component/wit/PROVENANCE.md`](../component/wit/PROVENANCE.md) do not establish that the contract was merged, released, installed, or supported as a minimum Niles version. This page does not check current upstream status.
 
-## Add-on boundary
+## Policy and proof boundary
 
-Pinned add-on contract: `component/wit/niles-integration.wit` is Niles integration 0.1; provenance records core revision and license at `component/wit/PROVENANCE.md`. WIT `notify.say` at lines 360-377 accepts message, priority and optional room. It does not accept PCM or satellite identities. Plugin world imports at lines 593-605 include notify, HTTP, devices, events and timers, but no Piper, audio, Wyoming or satellite interface. Sandbox notes at lines 586-592 refuse sockets and omit `wasi:http/outgoing-handler`. Household event subscription is not arbitrary provider-frame ingress.
-
-Conclusion: no currently supported add-on path to Piper→satellite announcement audio or selected-satellite targeting was found. Actual host integration and safety design are deferred. The addon-side injectable request boundary is implemented independently; its recording implementation is synthetic only. Do not build an adapter against private functions, equate notifications with announcements, duplicate Wyoming transport, or claim an executable protocol proof. The add-on cannot exercise Niles's actual transport through its supported surface; synthetic recording proves requests only, not actual delivery.
-
-## Smallest candidate host seam (proposal, not an API)
-
-If V1 keeps persisted selected-satellite choice, a minimal candidate is a host-owned, permission-gated announcement operation taking text and an explicit list of validated configured satellite identities. Niles retains Piper synthesis and selects the appropriate live-send or idle-push route. The host contract must define target validation, delivery result/error, limits and behavior when targets are unavailable. This is a proposal only, deferred to a later review; no API is claimed. No Niles/core changes, sidecar, localhost backdoor or direct device write is authorized here. Room-only targeting is not equivalent to the agreed selected subset. See [core communication inventory](core-communication.md) for addon source-by-source status and safety questions.
-
-## Reuse/licensing and proof
-
-No implementation artifact was copied or reused. Existing WIT provenance identifies the Niles integration contract as MIT OR Apache-2.0 material. An offline synthetic journey now exercises policy → recording requests and verifies the explicit unavailable production placeholder; it is not a transport proof. Exercising actual audio would require invoking private Niles host code, while this add-on has no supported import for it. No PCM was sent and no live API, provider, device or audio operation was performed.
-
-## Separate unresolved work
-
-Speech delivery feasibility is distinct from event-feed feasibility. Current WIT has no WebSocket ingress; authoritative Autodarts match/score, turn-completion, correction, bust and checkout semantics remain separately unverified. Neither question is answered by the other.
+Do not substitute notification delivery for announcements, call private host functions, duplicate Wyoming transport, write to satellites directly, or add a sidecar. Keep local collection totals separate from authoritative X01 scores and game outcomes. Synthetic recording adapters and mock imports exercise request/policy behavior only. Optional compiled-component host proof and synthetic local HTTP/status checks have narrower limits documented in the [canonical evidence ledger](plan.md#verification-and-proof-boundaries). Real Board Manager event order and miss encoding remain open; audible validation requires separate authorization.

@@ -1,5 +1,7 @@
 # Niles framework research checkpoint
 
+> Historical snapshot: this checkpoint records the earlier research and host-contract state, including the then-missing event and speech wiring. Current component implementation and its evidence limits are documented in [the canonical plan](plan.md), [core communication inventory](core-communication.md), and [pinned WIT provenance](../component/wit/PROVENANCE.md). These historical observations are not proof of current installed-host compatibility or operation.
+
 Autodarts implementation is paused while preparing a first Niles contribution. Local implementation remains uncommitted and unpublished; only initial documentation was previously pushed. Do not discard pending work.
 
 ## Product and evidence
@@ -11,7 +13,7 @@ V1 uses local Board Manager HTTP control/status and live dart/removal events. Ea
 Inspected main 2f4d54b739e001d2e4e1fe4e173bf4400dae476a and checked decisive docs/WIT/host/speech files identical on development 71952dafda9db7844bc6a5cd596aabb4be5308a2.
 
 - Host-managed WebSockets explicitly appear under docs/integrations/host-api.md Coming later; not implemented.
-- Current notify.say is the documented Piper/satellite speech route, but six-per-hour policy makes darts commentary unsuitable. Host targets a room, not arbitrary satellite IDs. No documented planned high-frequency speech interface found.
+- At that time, `notify.say` was the documented Piper/satellite speech route, but its six-per-hour policy made darts commentary unsuitable. Host targets a room, not arbitrary satellite IDs. No documented planned high-frequency speech interface found.
 - Prefer Niles-owned rooms/routing and normal device readings/actions. A separate WS→MQTT bridge could solve ingress only, but is additional infrastructure, not a transparent Wasm feature.
 - Read-only Linear lookup of NIL issues found no WebSocket issue. NIL-28 Backlog covers other plugin follow-ups, not WebSockets. No Linear writes made.
 
