@@ -1,28 +1,28 @@
-# Niles framework research checkpoint
+# Archived Niles framework research checkpoint
 
-Autodarts implementation is paused while preparing a first Niles contribution. Local implementation remains uncommitted and unpublished; only initial documentation was previously pushed. Do not discard pending work.
+This document preserves observations from an earlier Niles upstream investigation. It is historical context, not current add-on implementation status, workflow guidance or authorization. For the current contract and evidence limits, see the [canonical plan](plan.md), [core communication inventory](core-communication.md), and [announcement path](announcement-path.md).
 
-## Product and evidence
+## Historical product and evidence observations
 
-V1 uses local Board Manager HTTP control/status and live dart/removal events. Each dart → Total speaks numeric darts as detected and a cached total once on first explicit partial/full removal; Total only omits individual speech. Local sums are not game-authoritative X01 values. Injectable AnnouncementSession exists and offline verification passed in this conversation; live component event ingress and real speech remain absent. No deployment/audio proof.
+At the time of that checkpoint, the add-on investigation described local Board Manager HTTP control/status and live dart/removal events. It recorded an `AnnouncementSession` and offline verification while treating live component event ingress and real speech as absent. Those statements describe that earlier state only; the current component lifecycle is documented in the canonical plan. The local-sum, non-authoritative-X01 boundary remains applicable.
 
-## Framework research
+## Framework research at inspected revisions
 
-Inspected main 2f4d54b739e001d2e4e1fe4e173bf4400dae476a and checked decisive docs/WIT/host/speech files identical on development 71952dafda9db7844bc6a5cd596aabb4be5308a2.
+The investigation inspected Niles main at `2f4d54b739e001d2e4e1fe4e173bf4400dae476a` and checked decisive docs/WIT/host/speech files against development revision `71952dafda9db7844bc6a5cd596aabb4be5308a2`.
 
-- Host-managed WebSockets explicitly appear under docs/integrations/host-api.md Coming later; not implemented.
-- Current notify.say is the documented Piper/satellite speech route, but six-per-hour policy makes darts commentary unsuitable. Host targets a room, not arbitrary satellite IDs. No documented planned high-frequency speech interface found.
-- Prefer Niles-owned rooms/routing and normal device readings/actions. A separate WS→MQTT bridge could solve ingress only, but is additional infrastructure, not a transparent Wasm feature.
-- Read-only Linear lookup of NIL issues found no WebSocket issue. NIL-28 Backlog covers other plugin follow-ups, not WebSockets. No Linear writes made.
+- Host-managed WebSockets were described in the inspected documentation as “Coming later”; that was not implemented at those inspected revisions.
+- `notify.say` was the documented Piper/satellite notification route, but its six-per-hour policy made darts commentary unsuitable. It targeted a room, not arbitrary satellite IDs. No documented planned high-frequency speech interface was found in that research.
+- The investigation preferred Niles-owned rooms/routing and normal device readings/actions. A separate WS-to-MQTT bridge was considered additional infrastructure rather than a transparent Wasm feature.
+- A read-only Linear lookup found no WebSocket issue; NIL-28 Backlog covered other plugin follow-ups. No Linear writes were made.
 
-## Current user direction
+These are revision-specific observations and do not describe the checked-in add-on WIT or current component implementation.
 
-Save checkpoint, verify repository access and inspect contribution/setup workflow before coding. WebSocket support is intended as first Niles contribution. This is not authorization to publish an issue, push, deploy or implement before Niles workflow gates.
+## Historical user direction and contribution workflow
 
-## Verified contribution rules
+The user direction recorded then was to save the checkpoint, verify repository access and inspect contribution/setup workflow before coding. WebSocket support was intended as a first Niles contribution; this was not authorization to publish an issue, push, deploy or implement before Niles workflow gates.
 
-Current upstream AGENTS.md and CONTRIBUTING.md: development is base/PR target, main is released. New transports/features require issue and agreed decision before code. Non-Mark contributors file in Triage; only Mark moves to Todo. Work only on unassigned Todo issue not delegated to AI Harness; assign self and move In Progress before coding. Each Linear write still requires Johan's exact-payload approval. PR links Fixes NIL-N; Mark review and both CI jobs required; squash into development. No direct protected-branch push.
+The upstream contribution rules observed at that time were: `development` was the base/PR target and `main` was released; new transports/features required an issue and agreed decision before code; non-Mark contributors filed in Triage; only Mark moved issues to Todo; work was limited to unassigned Todo issues not delegated to AI Harness; contributors assigned themselves and moved work to In Progress before coding; each Linear write required Johan's exact-payload approval; PRs linked `Fixes NIL-N`, required Mark review and both CI jobs, then were squash-merged into `development`; direct protected-branch pushes were disallowed. These rules applied to that historical upstream Niles repository and are not this add-on's current PR rules.
 
-GitHub API confirms authenticated account has pull/push/triage, no maintain/admin. Local Niles checkout observed clean on main, behind origin/main by 77; origin/development missing. Do not reset/switch existing checkout blindly. Git author configured Johan Volmers Leth, GitHub noreply JVLHome.
+The checkpoint reported authenticated GitHub access with pull/push/triage but no maintain/admin; a local Niles checkout clean on `main`, 77 commits behind `origin/main`, and no local `origin/development`; and a Git author of Johan Volmers Leth with a GitHub noreply address. It advised against blindly resetting or switching that checkout. These were observations then, not repeated checks.
 
-Hermes skills trust enables repo-local .agents/skills and .hermes/skills. Current upstream has shadcn and unslop. Trust has NOT yet been enabled. No branches fetched/created or setup installed in this investigation. Rust/cargo/node/gh found; bun not on PATH. Fresh worktree from development is recommended after setup review, preserving existing checkout. Repo-local instructions differ from old injected context: CLAUDE.md now imports AGENTS.md; do not enforce obsolete mirror rule against current upstream.
+It also recorded Hermes skills trust behavior, repo-local `.agents/skills` and `.hermes/skills`, no trust enablement at that time, no fetched/created branches or installed setup, and Rust/cargo/node/gh availability with bun absent from PATH. A fresh worktree from `development` was recommended after setup review. The upstream repository's then-current instructions differed from older injected context, including a `CLAUDE.md` import of `AGENTS.md`; this remains historical repository-specific context only.
