@@ -1,4 +1,7 @@
 /target/
+.focused-worker.lock
+/component/host-proof/target/
+__pycache__/
 .env
 .env.*
 !.env.example

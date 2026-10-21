@@ -1,0 +1,68 @@
+id = "autodarts"
+name = "Autodarts"
+version = "0.1.0"
+authors = ["Johan Volmers Leth"]
+description = "Read Autodarts Board Manager status and diagnostics."
+keywords = ["autodarts", "dartboard"]
+min_niles = "0.2.0"
+interface = "0.5"
+
+[permissions]
+local_network = ["setting:address"]
+websocket = [
+    { name = "board_http_default", host = "setting:address", port = 80, tls = false },
+    { name = "board_http", host = "setting:address", port = 3180, tls = false },
+    { name = "board_https", host = "setting:address", port = 443, tls = true },
+]
+devices = true
+ui = true
+speech_stream = { room = "room" }
+
+[[settings]]
+key = "address"
+label = "Board Manager address"
+type = "string"
+required = true
+help = "Host name or IP, optionally with port; HTTP is used unless you enter an HTTPS origin."
+
+[[settings]]
+key = "room"
+label = "Room"
+type = "room"
+required = true
+
+[[settings]]
+key = "poll_interval"
+label = "Poll interval (seconds)"
+type = "number"
+default = 15
+min = 5
+max = 3600
+
+[[settings]]
+key = "announcements_enabled"
+label = "Enable score announcements"
+type = "boolean"
+default = false
+
+[[settings]]
+key = "announcement_mode"
+label = "Announcement mode"
+type = "choice"
+options = [
+    { value = "each_dart_then_total", label = "Each dart → Total" },
+    { value = "total_only", label = "Total only" },
+]
+help = "Required before enabling announcements; no mode is selected by default."
+
+[[settings]]
+key = "speech_stream_enabled"
+label = "Enable room speech stream"
+type = "boolean"
+default = false
+
+[[ui.menu]]
+id = "board"
+label = "Autodarts"
+icon = "target"
+refresh_every = 30

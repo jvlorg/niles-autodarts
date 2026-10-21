@@ -2,77 +2,28 @@
 
 ## GOAL STATUS
 
-Planning baseline recorded. Implementation has not started. Nothing is installed or live-proven.
+Implemented locally: validated announcement settings; a transport-independent application session owning `LocalJourney`; JSON parsing with automatic parse-error invalidation; reconfiguration and connection-reset handling; injectable delivery with explicit unavailable and recording adapters. Maintained replay exercises settings → raw JSON → session → announcement request/result across three collections, including partial/full duplicates. Parser regressions retain rejection of segment numbers 21–24, unrelated event topics, and bounded attempt history.
 
-This repository owns the standalone Autodarts add-on. Niles core remains responsible for household rooms, satellites and speech delivery; confirm its actual extension APIs before relying on them. Do not move the integration into Niles core or build a parallel speech service as an unapproved workaround.
+Missing: real Board Manager event ingress and Niles speech/audience delivery. Pinned component WIT has no WebSocket client import; the application session is reusable library code, not wired into live event ingress or the component lifecycle. No live Board Manager event-order/miss-encoding observation, installation, end-to-end audio, or audible proof. The local total is a detection-derived collection sum, not game-credited X01 authority.
 
-## V1 — room-scoped score announcer and board on/off
+## V1 — local Board Manager score announcements and detection control
 
-### Product contract
+V1 uses only the locally configured Autodarts Board Manager. No cloud account, match feed, X01 authority, game selection, match outcome or special/game speech is required. Local dart products and collection sums are not credited X01 scores, remaining scores, busts or checkout results.
 
-1. Represent the dartboard as a Niles device that the user can assign to a room.
-2. Support “Niles, turn on the dartboard” and the corresponding off command through normal Niles device control.
-3. On/off means starting/stopping local Board Manager detection. It does not mean physical power control or selecting/starting an online game.
-4. Show observed running state and availability. A command acknowledgement or timeout is not proof of successful startup.
-5. Let the user select the announcement satellites in the board's room; do not automatically broadcast to every satellite or infer that every room satellite is selected.
-6. Announce scores using Piper through the Niles-owned speech path to those selected satellites.
-7. Provide an announcement enable/disable control.
-8. Continue choosing and managing games through Autodarts itself for V1.
+The event parser accepts `{type,data}` envelopes and state fields `numThrows`, optional `throws[]`, and `segment.number`/`segment.multiplier`. It bounds envelope bytes and dart array length, rejects non-object states, invalid range/multipliers and count mismatches. Bull 25 and 50 are valid. Multiplier-zero is rejected; maintained source evidence does not resolve whether misses are encoded as `(0,0)` or `(0,1)`, so no claim of validated miss support is made. A malformed JSON input is reported by `AnnouncementSession` to the reducer as invalid; callers cannot silently drop parse errors through the session API.
 
-### Decisions still open
+Reducer phases are awaiting a clean baseline, collecting, and awaiting clear. Only an empty, count-zero state establishes a usable baseline. A nonempty baseline suppresses that entire existing collection, including later appends. Unrelated camera/status topics are ignored. It accepts one append at a time, with at most three darts. Each dart is announced as local API reports it; TotalOnly remains silent until the total boundary. The first explicit `isTakeoutPartial=true` or `isTakeoutFull=true` marker completes the eligible cached collection once; subsequent markers cannot repeat it. These are local detection values, not authoritative game scores.
 
-- Announce each dart, a completed turn total, or both? No default has been approved.
-- Which feed supplies authoritative scores, corrections, busts and checkouts? Local throw detections are not automatically authoritative match results.
-- What defines a confirmed score, and how should a subsequent correction be handled?
-- Can the deployed Niles add-on contract request Piper speech to an explicit satellite audience and expose board control through normal voice/device tools?
-- How should unavailable satellites, room reassignment, disabled announcements and overlapping speech be handled?
-- Is more than one board required for V1? Do not bake a household-specific room or board identity into the implementation.
+For marker-before-clear, the validated cached collection is spoken once. In TotalOnly, a clear-before-marker preserves its eligible cached collection until the explicit removal marker; clear itself never announces. For Each dart → Total, if a shrink/empty state precedes the marker, retain only the last validated pre-removal snapshot as a bounded candidate; shrink alone never announces. The first subsequent explicit removal marker may complete that candidate. Corrections, invalid/out-of-order evidence, malformed/stopped input and reconnect/disable/settings changes invalidate it; ambiguity suppresses. After completion, require a clean empty baseline before another collection. No reliable timestamps are supplied by the source, so no time-based expiry is claimed.
 
-### Acceptance targets (not yet tested)
+`AnnouncementSession` owns validated settings, parsing and reducer state; callers provide each JSON envelope and an `AnnouncementDelivery`. Request keys include connection epoch and collection serial. Each delivery attempt is recorded before invoking the injectable boundary, so unavailable/failed attempts are not blindly retried. Target identities are sorted and deduplicated. Disabling, changing mode/audience, or reconnecting resets policy and requires a clean empty baseline. Parse failures automatically invalidate the current journey.
 
-- Board registration and room assignment work through Niles, with stable identity across restart.
-- Voice on/off resolves to the correct board; observed state confirms the result. Unreachable hardware is unavailable, not falsely off or successfully started.
-- Satellite selection is persisted and scoped to the board's room; unselected satellites receive no announcements.
-- Confirmed score evidence produces the agreed spoken content through the actual host/Piper/satellite path.
-- Duplicate events and reconnect snapshots do not repeat announcements; stale queued scores are not spoken after recovery.
-- Corrections and provisional detections follow the agreed announcement policy rather than guessing.
-- Disabling announcements stops new score speech without implicitly stopping the board.
-- Restart/disconnect recovery is covered by deterministic tests and later an explicitly approved live test.
+A slow `/api/state` timer poll is status/baseline-only, not a real-time event stream. Pinned component WIT has no WebSocket client import, so the session remains library-only; real event ingress and Niles speech binding remain deferred boundaries in `docs/core-communication.md`. Production delivery is unavailable; no Niles core edits, sidecar, notification fallback, or direct satellite transport.
 
-## V2 — TV scoreboard
+V1 product scope remains Board Manager detection on/off (not physical power/reset/game creation), room selection and local announcements through selected room satellites in both Each dart → Total and Total only modes; these are not all implemented end-to-end. Announcement settings default disabled; identities are configuration intent, not validated household targets. Preserve V2 TV scoreboard and V3 game selection as later scope; do not collapse those roadmap boundaries into V1.
 
-Goal: display the current scoreboard on the room's LG TV, using the LG TV add-on for power and app/page selection where supported.
+## Verification and proof boundaries
 
-Investigate supported TV launch targets, scoreboard rendering and transport, live updates, authentication and reconnect behavior. A web page is a candidate, not an approved implementation. Do not assume arbitrary casting, app launch or browser support. V1 must not depend on V2.
+Synthetic parser/session tests cover three identical consecutive collections, incremental speech, both modes, first partial/full removal exactly once, repeated markers, both clear/marker orders including TotalOnly clear-before-marker, correction/no-marker suppression, resets, bounded unique identities, parse-error invalidation, unavailable no-retry, and synthetic miss/bull cases (not live evidence). Maintained JSON replay exercises three collections through settings → session JSON ingress → reducer → recording adapter. Probe and local-host checks prove only their synthetic transport/status paths. Record exact command evidence after running the verification suite.
 
-## V3 — game selection (tentative)
-
-Explore selecting/starting games from Niles, including game variants, players, match options and confirmation semantics. Scope and API feasibility remain undecided. Keep game creation distinct from turning detection on.
-
-## Existing expertise and investigation order
-
-Local reference: `/home/jleth/projects/smart-hub/src/modules/autodarts/`.
-
-- `client.rs`: HTTP diagnostics; PUT `/api/start`, `/api/stop`, `/api/reset`; WebSocket URL `/api/events`.
-- `poller.rs`: polling and WebSocket ingestion; board, motion, camera and throw data.
-- `mod.rs`: Smart Hub command mapping; not a Niles host adapter.
-- `model.rs`: diagnostics shape and known local event topics.
-
-These are source observations, not a fresh live API verification. Do not copy the old start-timeout-as-success behavior or household-specific device/room wiring without review. Reset exists in the reference but is not required by the agreed V1 scope.
-
-Next investigation, before implementation:
-
-1. Trace confirmed score/turn semantics in existing code and safe fixtures; identify any required match feed.
-2. Inspect current Niles WIT and host implementations for room/device control, satellite selection and targeted speech. Pin the reviewed revision.
-3. Resolve announcement granularity with Johan and record the chosen behavior here.
-4. Define the smallest end-to-end add-on slice and deterministic test fixtures; then implement within approved coding scope.
-5. Verify packaging and host loading separately from approved physical/audio testing.
-
-## Execution and publication boundaries
-
-- This initial bootstrap is documentation only; no runtime, manifest or release claims.
-- Keep source-supported, unit-tested, host-tested, installed and live-proven states distinct.
-- No audible tests, device/provider writes, live restarts or deployments without explicit approval.
-- GitHub publication requires approval; the initial documentation push is explicitly approved. That does not grant indefinite future pushes.
-- Linear is not part of this bootstrap. Any Niles maintainer issue must be shown to Johan and explicitly approved before posting to Niles Triage.
-- Keep secrets, private captures and generated build artifacts out of Git. Inspect reuse licensing before copying source.
+Keep source-implemented, synthetic-tested, host-tested, installed and live-proven distinct. No commits, pushes, deployment, live board command/observation, provider calls or Niles core changes are authorized in this task.

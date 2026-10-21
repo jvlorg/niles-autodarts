@@ -1,0 +1,47 @@
+[package]
+name = "autodarts"
+version = "0.1.0"
+description = "Autodarts Board Manager status and detection controls with room-bound local speech commentary"
+
+[[settings]]
+key = "address"
+type = "string"
+required = true
+[[settings]]
+key = "room"
+type = "room"
+required = true
+[[settings]]
+key = "poll_interval"
+type = "number"
+default = 15
+min = 5
+max = 3600
+
+[[settings]]
+key = "announcements_enabled"
+type = "boolean"
+default = false
+[[settings]]
+key = "announcement_mode"
+type = "choice"
+default = "each_dart_then_total"
+options = [
+    { value = "each_dart_then_total", label = "Each dart → Total" },
+    { value = "total_only", label = "Total only" },
+]
+[[settings]]
+key = "speech_stream_enabled"
+type = "boolean"
+default = false
+
+[capabilities]
+http = ["GET /api/version", "GET /api/state"]
+state = ["connection", "running", "status", "event", "numThrows"]
+explicitly_not_used = ["/api/config", "PUT /api/reset"]
+
+[permissions]
+local_network = ["setting:address"]
+devices = true
+ui = true
+speech_stream = { room = "room" }
