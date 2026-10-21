@@ -1,6 +1,8 @@
 # Niles framework research checkpoint
 
-Autodarts implementation is paused while preparing a first Niles contribution. Local implementation remains uncommitted and unpublished; only initial documentation was previously pushed. Do not discard pending work.
+> Historical checkpoint: the statements below describe the research date and revisions recorded here, not current checked-in integration status or installed-host behavior. For current add-on status at reconciliation revision `c0e6b23629914e371c7e2525b4c9c1d972fcf3b9`, see the [canonical plan](plan.md) and [core communication inventory](core-communication.md).
+
+At this checkpoint, Autodarts implementation was paused while preparing a first Niles contribution. The notes about pending work and publication below describe that recorded state only; consult the current [canonical plan](plan.md) for present implementation status.
 
 ## Product and evidence
 
@@ -15,7 +17,7 @@ Inspected main 2f4d54b739e001d2e4e1fe4e173bf4400dae476a and checked decisive doc
 - Prefer Niles-owned rooms/routing and normal device readings/actions. A separate WS→MQTT bridge could solve ingress only, but is additional infrastructure, not a transparent Wasm feature.
 - Read-only Linear lookup of NIL issues found no WebSocket issue. NIL-28 Backlog covers other plugin follow-ups, not WebSockets. No Linear writes made.
 
-## Current user direction
+## User direction recorded at this checkpoint
 
 Save checkpoint, verify repository access and inspect contribution/setup workflow before coding. WebSocket support is intended as first Niles contribution. This is not authorization to publish an issue, push, deploy or implement before Niles workflow gates.
 
