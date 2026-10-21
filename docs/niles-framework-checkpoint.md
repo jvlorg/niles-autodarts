@@ -1,30 +1,18 @@
 # Niles framework research checkpoint
 
-> Historical snapshot: this checkpoint records the earlier research and host-contract state, including the then-missing event and speech wiring. Current component implementation and its evidence limits are documented in [the canonical plan](plan.md), [core communication inventory](core-communication.md), and [pinned WIT provenance](../component/wit/PROVENANCE.md). These historical observations are not proof of current installed-host compatibility or operation.
+> Historical research snapshot. This page records an earlier Niles host-contract review and the project state at that time. It is not current implementation guidance or evidence of installed-host compatibility. For the checked-in component and current evidence limits, see the [canonical plan](plan.md), [core communication inventory](core-communication.md), and [pinned WIT provenance](../component/wit/PROVENANCE.md).
 
-Autodarts implementation is paused while preparing a first Niles contribution. Local implementation remains uncommitted and unpublished; only initial documentation was previously pushed. Do not discard pending work.
+## Earlier host-contract findings
 
-## Product and evidence
+The review inspected Niles main at `2f4d54b739e001d2e4e1fe4e173bf4400dae476a` and compared decisive documentation, WIT, host, and speech files with development commit `71952dafda9db7844bc6a5cd596aabb4be5308a2`.
 
-V1 uses local Board Manager HTTP control/status and live dart/removal events. Each dart → Total speaks numeric darts as detected and a cached total once on first explicit partial/full removal; Total only omits individual speech. Local sums are not game-authoritative X01 values. Injectable AnnouncementSession exists and offline verification passed in this conversation; live component event ingress and real speech remain absent. No deployment/audio proof.
+- Host-managed WebSockets appeared under `docs/integrations/host-api.md` as coming later; they were not implemented in that inspected snapshot.
+- `notify.say` was the documented Piper/satellite speech route, but its six-per-hour policy did not fit dart commentary. The host targeted a room rather than arbitrary satellite IDs, and no planned high-frequency speech interface was found in the reviewed docs.
+- The review favored Niles-owned rooms/routing and normal device readings/actions. A separate WebSocket-to-MQTT bridge could address ingress, but would add infrastructure rather than provide a transparent Wasm feature.
+- A read-only Linear lookup at that time found no WebSocket issue; NIL-28 covered other plugin follow-ups. No Linear writes were made.
 
-## Framework research
+These observations explain why the earlier design lacked supported event ingress and speech binding. They do not describe the current pinned 0.5.0 WIT contract, establish that its upstream changes were merged or released, or prove compatibility with an installed Niles host. Current implementation and proof limits are maintained in the [canonical plan](plan.md#verification-and-proof-boundaries).
 
-Inspected main 2f4d54b739e001d2e4e1fe4e173bf4400dae476a and checked decisive docs/WIT/host/speech files identical on development 71952dafda9db7844bc6a5cd596aabb4be5308a2.
+## Earlier contribution and workspace observations
 
-- Host-managed WebSockets explicitly appear under docs/integrations/host-api.md Coming later; not implemented.
-- At that time, `notify.say` was the documented Piper/satellite speech route, but its six-per-hour policy made darts commentary unsuitable. Host targets a room, not arbitrary satellite IDs. No documented planned high-frequency speech interface found.
-- Prefer Niles-owned rooms/routing and normal device readings/actions. A separate WS→MQTT bridge could solve ingress only, but is additional infrastructure, not a transparent Wasm feature.
-- Read-only Linear lookup of NIL issues found no WebSocket issue. NIL-28 Backlog covers other plugin follow-ups, not WebSockets. No Linear writes made.
-
-## Current user direction
-
-Save checkpoint, verify repository access and inspect contribution/setup workflow before coding. WebSocket support is intended as first Niles contribution. This is not authorization to publish an issue, push, deploy or implement before Niles workflow gates.
-
-## Verified contribution rules
-
-Current upstream AGENTS.md and CONTRIBUTING.md: development is base/PR target, main is released. New transports/features require issue and agreed decision before code. Non-Mark contributors file in Triage; only Mark moves to Todo. Work only on unassigned Todo issue not delegated to AI Harness; assign self and move In Progress before coding. Each Linear write still requires Johan's exact-payload approval. PR links Fixes NIL-N; Mark review and both CI jobs required; squash into development. No direct protected-branch push.
-
-GitHub API confirms authenticated account has pull/push/triage, no maintain/admin. Local Niles checkout observed clean on main, behind origin/main by 77; origin/development missing. Do not reset/switch existing checkout blindly. Git author configured Johan Volmers Leth, GitHub noreply JVLHome.
-
-Hermes skills trust enables repo-local .agents/skills and .hermes/skills. Current upstream has shadcn and unslop. Trust has NOT yet been enabled. No branches fetched/created or setup installed in this investigation. Rust/cargo/node/gh found; bun not on PATH. Fresh worktree from development is recommended after setup review, preserving existing checkout. Repo-local instructions differ from old injected context: CLAUDE.md now imports AGENTS.md; do not enforce obsolete mirror rule against current upstream.
+The original checkpoint also recorded a then-current contribution workflow: development was the PR target, new transports/features required an issue and an agreed decision before coding, and protected branches were not to be pushed directly. It recorded a local Niles checkout on `main`, 77 commits behind `origin/main`, no local `origin/development`, and repository-specific setup observations. These were point-in-time notes, not instructions for this add-on's current work or claims about present upstream state.
