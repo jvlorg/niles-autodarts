@@ -1,17 +1,17 @@
 # Niles framework research checkpoint
 
-Autodarts implementation is paused while preparing a first Niles contribution. Local implementation remains uncommitted and unpublished; only initial documentation was previously pushed. Do not discard pending work.
+Historical checkpoint: this document records research from the source revisions and date context below. Its statements about absent imports and unwired delivery are checkpoint findings, not current component status. For current implementation and proof boundaries, see the [published implementation revision](https://github.com/jvlorg/niles-autodarts/tree/c0e6b23629914e371c7e2525b4c9c1d972fcf3b9) and [canonical plan](plan.md).
 
 ## Product and evidence
 
-V1 uses local Board Manager HTTP control/status and live dart/removal events. Each dart → Total speaks numeric darts as detected and a cached total once on first explicit partial/full removal; Total only omits individual speech. Local sums are not game-authoritative X01 values. Injectable AnnouncementSession exists and offline verification passed in this conversation; live component event ingress and real speech remain absent. No deployment/audio proof.
+V1 uses local Board Manager HTTP control/status and dart/removal events. Each dart → Total speaks numeric darts as detected and a cached total once on first explicit partial/full removal; Total only omits individual speech. Local sums are not game-authoritative X01 values. At this checkpoint, `AnnouncementSession` existed and offline verification had passed in that conversation; component event ingress and real speech imports were absent from the inspected contract. No deployment/audio proof was recorded.
 
 ## Framework research
 
 Inspected main 2f4d54b739e001d2e4e1fe4e173bf4400dae476a and checked decisive docs/WIT/host/speech files identical on development 71952dafda9db7844bc6a5cd596aabb4be5308a2.
 
-- Host-managed WebSockets explicitly appear under docs/integrations/host-api.md Coming later; not implemented.
-- Current notify.say is the documented Piper/satellite speech route, but six-per-hour policy makes darts commentary unsuitable. Host targets a room, not arbitrary satellite IDs. No documented planned high-frequency speech interface found.
+- Host-managed WebSockets explicitly appeared under docs/integrations/host-api.md Coming later in the inspected source revision; not implemented in that checkpoint.
+- `notify.say` was the documented Piper/satellite speech route in the inspected revision, but its six-per-hour policy made darts commentary unsuitable. That host path targeted a room, not arbitrary satellite IDs; no documented planned high-frequency speech interface was found at that checkpoint.
 - Prefer Niles-owned rooms/routing and normal device readings/actions. A separate WS→MQTT bridge could solve ingress only, but is additional infrastructure, not a transparent Wasm feature.
 - Read-only Linear lookup of NIL issues found no WebSocket issue. NIL-28 Backlog covers other plugin follow-ups, not WebSockets. No Linear writes made.
 
