@@ -15,6 +15,16 @@ The reducer treats full removal as a collection boundary under its explicit cand
 The slow `/api/state` poll is status/baseline-only and is not a real-time event feed. Detection on/off controls Board Manager detection only; it does not control physical power, reset, or game creation. V1 includes room selection and local announcements in both modes, while selected-satellite audience behavior remains unresolved. Announcement settings default disabled. V2 TV scoreboard and V3 game selection remain later roadmap scope.
 
 ## Verification
+### Evidence at a glance
+
+| Evidence | Existing basis | Limits |
+|---|---|---|
+| Source implementation | [Component source](component/src/lib.rs): conditional `/api/events` ingress and gated room-bound speech open/submit/status/close. | Source wiring is not proof of installed-host compatibility, selected-satellite routing or audible playback. |
+| Synthetic tests | [Core policy](crates/autodarts-core/src/local_score.rs), [replay](crates/autodarts-core/examples/announcement_replay.rs), and [component callbacks](component/src/tests.rs) with [fake imports](component/src/test_host.rs): deterministic policy and callback/speech-lifecycle coverage. | Synthetic inputs and mock/recording delivery, not live Board Manager events or real speech output; no tests were run for this documentation revision. |
+| Optional compiled host proof | [Host-proof test](component/tests/host_proof.rs): if run, the compiled component through `niles_core::Runtime` with synthetic events and recording speech. | [Manifest](component/host-proof/Cargo.toml) uses absolute developer-local Niles checkout dependencies; a CLI path alone is insufficient. Not installed CLI speech-flow, live-event or audible proof. |
+| Live / audible verification | Not established by the existing evidence. | Installed-host compatibility, live event ordering and miss encoding, selected-satellite routing, and audible playback remain unproven. |
+
+See [Verification and proof boundaries](docs/plan.md#verification-and-proof-boundaries) for the detailed evidence and exclusions.
 
 `bash scripts/verify.sh` runs formatting, workspace build, strict Clippy, workspace tests and the release Wasm component build. The optional `--host-proof /absolute/path/to/niles` branch first checks that the CLI executable exists, then runs the separate compiled `component/host-proof` test. That crate currently uses absolute developer-local Niles checkout paths; a CLI path alone cannot make a fresh checkout portable. Its proof uses synthetic events and recording speech and does not prove an installed CLI speech flow.
 
