@@ -5,6 +5,10 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 remote="https://github.com/MarkNygaard/niles.git"
 pin_file="$root/scripts/niles-host-revision"
 cache="$root/.cache/niles"
+cd "$root"
+if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
+  export CARGO_TARGET_DIR="$(realpath -m -- "$CARGO_TARGET_DIR")"
+fi
 
 if [[ ! -s "$pin_file" ]]; then
   printf 'missing host revision pin: %s\n' "$pin_file" >&2
@@ -47,7 +51,8 @@ else
   fi
 fi
 
-if ! cargo build --locked --manifest-path "$cache/Cargo.toml" --bin niles; then
+# Resolve the checkout's released rust-toolchain.toml, not the caller's default.
+if ! (cd "$cache" && cargo build --locked --manifest-path "$cache/Cargo.toml" --bin niles); then
   printf 'pinned Niles checkout is verified, but the CLI build failed; check supported Rust/native prerequisites or dependency access\n' >&2
   exit 1
 fi

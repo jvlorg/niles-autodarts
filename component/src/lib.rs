@@ -52,6 +52,7 @@ struct Runtime {
     snapshot: Snapshot,
     command_status: Option<String>,
     speech_session: Option<u32>,
+    speech_reopen_pending: bool,
     speech_generation: u64,
     speech_pending: BTreeMap<u64, SpeechRequest>,
     speech_history: VecDeque<SpeechCompletion>,
@@ -325,12 +326,14 @@ fn connect_websocket(config: &Config) -> Result<u32, String> {
 
 /// The bounded event ingress shared by host callbacks and synthetic tests.
 fn ingest_announcement_json(json: &[u8]) -> autodarts_core::local_score::JourneyResult {
-    let pending_full = RUNTIME.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .is_some_and(|runtime| runtime.speech_pending.len() >= MAX_PENDING_SPEECH)
+    let has_pending = RUNTIME.with(|slot| {
+        slot.borrow().as_ref().is_some_and(|runtime| {
+            runtime.speech_reopen_pending || !runtime.speech_pending.is_empty()
+        })
     });
-    if pending_full {
+    // The released host retains only 32 uncollected results. Reclaim them
+    // during event ingress, not only at our larger bookkeeping bound.
+    if has_pending {
         poll_speech();
     }
     RUNTIME.with(|slot| {
@@ -344,9 +347,14 @@ fn ingest_announcement_json(json: &[u8]) -> autodarts_core::local_score::Journey
             pending: &mut runtime.speech_pending,
             submission_error: &mut runtime.speech_submission_error,
         };
-        runtime
+        let result = runtime
             .announcement_session
-            .ingest_json(json, &mut delivery)
+            .ingest_json(json, &mut delivery);
+        if result == autodarts_core::local_score::JourneyResult::Invalid {
+            invalidate_speech(runtime, "invalid Board event");
+            reopen_speech(runtime);
+        }
+        result
     })
 }
 
@@ -434,6 +442,9 @@ fn poll_speech() {
     RUNTIME.with(|slot| {
         let mut slot = slot.borrow_mut();
         let Some(runtime) = slot.as_mut() else { return };
+        if runtime.speech_reopen_pending {
+            reopen_speech(runtime);
+        }
         let Some(session) = runtime.speech_session else {
             return;
         };
@@ -575,6 +586,7 @@ fn render_tree(snapshot: &Snapshot, command_status: Option<&str>) -> UiTree {
     UiTree { nodes }
 }
 fn invalidate_speech(runtime: &mut Runtime, reason: &str) {
+    runtime.announcement_session.connection_reset();
     runtime.speech_generation = runtime.speech_generation.saturating_add(1);
     let pending = std::mem::take(&mut runtime.speech_pending);
     for (host_request, request) in pending {
@@ -591,11 +603,42 @@ fn invalidate_speech(runtime: &mut Runtime, reason: &str) {
         );
     }
     let session = runtime.speech_session.take();
+    runtime.speech_reopen_pending = false;
     runtime.speech_poll_error = None;
     runtime.speech_submission_error = Some(format!("Speech requests discarded on {reason}"));
     if let Some(session) = session {
         speech_stream::close(session);
     }
+}
+
+fn reopen_speech(runtime: &mut Runtime) {
+    runtime.speech_reopen_pending = false;
+    if runtime.announcements.enabled && runtime.speech_enabled && runtime.speech_session.is_none() {
+        match speech_stream::open(&runtime.config.room) {
+            Ok(session) => {
+                runtime.speech_session = Some(session);
+                runtime.speech_submission_error = None;
+            }
+            Err(error) => {
+                // close is asynchronous in the released host; Busy maps to
+                // Unavailable until its old owner finishes. Retry opening on
+                // later ingress/timer callbacks, never replay an utterance.
+                runtime.speech_reopen_pending = matches!(error, types::HostError::Unavailable(_));
+                runtime.speech_submission_error =
+                    Some(format!("Speech stream reopen failed: {error:?}"));
+            }
+        }
+    }
+}
+
+fn stop_runtime() -> Option<Runtime> {
+    let mut runtime = RUNTIME.with(|slot| slot.borrow_mut().take())?;
+    let conn = runtime.websocket_id.take();
+    invalidate_speech(&mut runtime, "stop");
+    if let Some(conn) = conn {
+        websocket::close(conn);
+    }
+    Some(runtime)
 }
 impl Guest for Plugin {
     fn init() -> Result<(), String> {
@@ -630,7 +673,7 @@ impl Guest for Plugin {
         if unchanged {
             return Ok(());
         }
-        Self::stop();
+        let previous = stop_runtime();
         let announcements_enabled = announcements.enabled;
         let (websocket_id, websocket_status) = if announcements_enabled {
             match connect_websocket(&config) {
@@ -650,7 +693,7 @@ impl Guest for Plugin {
             (None, Some("Board event stream disabled".into()))
         };
         let mut speech_open_error = None;
-        let speech_session = if speech_enabled {
+        let speech_session = if announcements_enabled && speech_enabled {
             match speech_stream::open(&config.room) {
                 Ok(session) => Some(session),
                 Err(error) => {
@@ -678,9 +721,13 @@ impl Guest for Plugin {
                 },
                 command_status: None,
                 speech_session,
-                speech_generation: 0,
+                speech_reopen_pending: false,
+                speech_generation: previous
+                    .as_ref()
+                    .map_or(0, |runtime| runtime.speech_generation),
                 speech_pending: BTreeMap::new(),
-                speech_history: VecDeque::new(),
+                speech_history: previous
+                    .map_or_else(VecDeque::new, |runtime| runtime.speech_history),
                 speech_poll_error: None,
                 speech_submission_error: speech_open_error,
                 speech_enabled,
@@ -865,11 +912,9 @@ impl Guest for Plugin {
         }
         match message {
             bindings::niles::integration::websocket::Message::Text(text) => {
-                if text.len() <= 64 * 1024 {
-                    let _ = ingest_announcement_json(text.as_bytes());
-                } else {
-                    let _ = ingest_announcement_json(&vec![b' '; 64 * 1024 + 1]);
-                }
+                // The core parser checks byte length before parsing, without
+                // allocating a second oversized buffer.
+                let _ = ingest_announcement_json(text.as_bytes());
             }
             bindings::niles::integration::websocket::Message::Binary(_) => {
                 let _ = ingest_announcement_json(b"invalid non-text WebSocket event");
@@ -889,29 +934,16 @@ impl Guest for Plugin {
             match status {
                 bindings::niles::integration::websocket::ConnectionStatus::Connected => {
                     runtime.announcement_session.connection_reset();
-                    if runtime.speech_enabled && runtime.speech_session.is_none() {
-                        match speech_stream::open(&runtime.config.room) {
-                            Ok(session) => {
-                                runtime.speech_session = Some(session);
-                                runtime.speech_submission_error = None;
-                            }
-                            Err(error) => {
-                                runtime.speech_submission_error =
-                                    Some(format!("Speech stream reopen failed: {error:?}"));
-                            }
-                        }
-                    }
+                    reopen_speech(runtime);
                     runtime.websocket_status =
                         Some("Board event stream connected; baseline required".into());
                 }
                 bindings::niles::integration::websocket::ConnectionStatus::Disconnected(reason) => {
-                    runtime.announcement_session.connection_reset();
                     invalidate_speech(runtime, "Board event disconnect");
                     runtime.websocket_status =
                         Some(format!("Board event stream reconnecting: {reason}"));
                 }
                 bindings::niles::integration::websocket::ConnectionStatus::Failed(kind) => {
-                    runtime.announcement_session.connection_reset();
                     invalidate_speech(runtime, "Board event failure");
                     let reason = match kind {
                         bindings::niles::integration::websocket::FailureKind::Policy => {
@@ -929,7 +961,7 @@ impl Guest for Plugin {
                 }
                 bindings::niles::integration::websocket::ConnectionStatus::Overflow(count) => {
                     invalidate_speech(runtime, "Board event overflow");
-                    runtime.announcement_session.connection_reset();
+                    reopen_speech(runtime);
                     runtime.websocket_status = Some(format!(
                         "Board event stream overflow ({count}); baseline required"
                     ));
@@ -957,15 +989,7 @@ impl Guest for Plugin {
         }
     }
     fn stop() {
-        RUNTIME.with(|slot| {
-            if let Some(mut runtime) = slot.borrow_mut().take() {
-                let conn = runtime.websocket_id.take();
-                invalidate_speech(&mut runtime, "stop");
-                if let Some(conn) = conn {
-                    websocket::close(conn);
-                }
-            }
-        });
+        stop_runtime();
     }
 }
 fn settings_interval() -> u32 {

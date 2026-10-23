@@ -16,6 +16,11 @@ on:
         default: false
         type: boolean
 
+permissions: {}
+concurrency:
+  group: alpha-${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  cancel-in-progress: false
+
 jobs:
   resolve:
     runs-on: ubuntu-latest
@@ -24,11 +29,13 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       publish: ${{ steps.tag.outputs.publish }}
+      revision: ${{ steps.revision.outputs.revision }}
     steps:
       - id: tag
         shell: bash
         env:
           EVENT_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
           MANUAL_PUBLISH: ${{ inputs.publish || 'false' }}
         run: |
           set -euo pipefail
@@ -37,18 +44,20 @@ jobs:
             echo "unsupported candidate tag: $tag (expected v0.1.0-alpha.1)" >&2
             exit 2
           }
-          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]] || {
-            echo "invalid alpha tag: $tag" >&2
-            exit 2
-          }
           publish=false
-          if [[ "${{ github.event_name }}" == push || "$MANUAL_PUBLISH" == true ]]; then
+          if [[ "$EVENT_NAME" == push || "$MANUAL_PUBLISH" == true ]]; then
             publish=true
           fi
           {
             printf 'tag=%s\n' "$tag"
             printf 'publish=%s\n' "$publish"
           } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+      - id: revision
+        run: printf 'revision=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   validate:
     needs: resolve
@@ -56,25 +65,51 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ needs.resolve.outputs.tag }}
+          ref: ${{ needs.resolve.outputs.revision }}
           fetch-depth: 0
+          persist-credentials: false
       - name: Verify immutable tag checkout
         shell: bash
         env:
           TAG: ${{ needs.resolve.outputs.tag }}
+          REVISION: ${{ needs.resolve.outputs.revision }}
         run: |
           set -euo pipefail
-          test "$(git describe --tags --exact-match HEAD)" = "$TAG"
+          test "$(git rev-parse HEAD)" = "$REVISION"
+          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$REVISION"
+      - name: Install verification prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y pkg-config python3 python3-venv
+          rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy --target wasm32-wasip2
+          rustup toolchain install stable --profile minimal
+          python3 -m venv "$RUNNER_TEMP/verification-tools"
+          "$RUNNER_TEMP/verification-tools/bin/pip" install uv==0.9.5
+          echo "$RUNNER_TEMP/verification-tools/bin" >> "$GITHUB_PATH"
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Run complete local verification
-        run: bash scripts/verify.sh
-      - name: Upload exact candidate and evidence
-        uses: actions/upload-artifact@v4
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/verify.sh 2>&1 | tee "$RUNNER_TEMP/verification.log"
+      - name: Upload exact candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: alpha-${{ needs.resolve.outputs.tag }}
-          path: dist/0.1.0-alpha.1/
+          path: dist/v0.1.0-alpha.1/
           if-no-files-found: error
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: evidence-${{ needs.resolve.outputs.tag }}
+          path: ${{ runner.temp }}/verification.log
+          if-no-files-found: warn
 
   publish:
     needs: [resolve, validate]
@@ -84,7 +119,16 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      # An admin must configure required reviewers before setting this repository variable.
+      - name: Require configured approval protection
+        env:
+          APPROVAL_CONFIGURED: ${{ vars.ALPHA_RELEASE_APPROVAL_CONFIGURED }}
+        run: test "$APPROVAL_CONFIGURED" = true
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.resolve.outputs.revision }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: alpha-${{ needs.resolve.outputs.tag }}
           path: artifact
@@ -92,19 +136,68 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.resolve.outputs.tag }}
+          REVISION: ${{ needs.resolve.outputs.revision }}
         shell: bash
         run: |
           set -euo pipefail
-          candidate="$(find artifact -type f -name niles-integration.toml -print -quit)"
-          test -n "$candidate"
-          candidate="${candidate%/*}"
-          test -f "$candidate/integration.wasm"
-          test -f "$candidate/SHA256SUMS"
-          test -f "$candidate/PROVENANCE"
-          (cd "$candidate" && sha256sum --check SHA256SUMS)
-          gh release create "$TAG" "$candidate/niles-integration.toml" "$candidate/integration.wasm" "$candidate/SHA256SUMS" "$candidate/PROVENANCE" \
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import tomllib
+
+          stage = pathlib.Path("artifact")
+          manifest = tomllib.loads((stage / "niles-integration.toml").read_text())
+          provenance = json.loads((stage / "provenance.json").read_text())
+          expected = {"niles-integration.toml", "integration.wasm", "provenance.json"}
+          if manifest.get("logo") is not None:
+              expected.add(manifest["logo"])
+          files = {p.relative_to(stage).as_posix() for p in stage.rglob("*") if p.is_file()}
+          if files != expected | {"SHA256SUMS"}:
+              raise SystemExit("unexpected or missing candidate assets")
+          checksums = {}
+          for row in (stage / "SHA256SUMS").read_text().splitlines():
+              match = re.fullmatch(r"([0-9a-f]{64})  (.+)", row)
+              if not match or match[2] in checksums:
+                  raise SystemExit("invalid or duplicate checksum entry")
+              checksums[match[2]] = match[1]
+          if set(checksums) != expected:
+              raise SystemExit("checksum set does not match candidate assets")
+          for name, digest in checksums.items():
+              path = pathlib.PurePosixPath(name)
+              if path.is_absolute() or ".." in path.parts or (stage / path).is_symlink():
+                  raise SystemExit("unsafe candidate asset path")
+              if hashlib.sha256((stage / path).read_bytes()).hexdigest() != digest:
+                  raise SystemExit(f"checksum mismatch: {name}")
+          if (provenance["source_revision"] != os.environ["REVISION"]
+              or provenance["source_clean"] is not True
+              or provenance["tag"] != os.environ["TAG"]
+              or provenance["host_revision"] != pathlib.Path("scripts/niles-host-revision").read_text().strip()
+              or provenance["build"]["exit_code"] != 0 or provenance["check"]["exit_code"] != 0
+              or manifest["version"] != os.environ["TAG"].removeprefix("v")
+              or manifest["interface"] != "0.5" or manifest["min_niles"] != "0.5.0"):
+              raise SystemExit("candidate provenance/metadata mismatch")
+          names = sorted(files)
+          if len({pathlib.PurePosixPath(name).name for name in names}) != len(names):
+              raise SystemExit("duplicate release asset names")
+          pathlib.Path(os.environ["RUNNER_TEMP"], "release-assets").write_text(
+              "\n".join(str(stage / name) for name in names) + "\n")
+          PY
+          mapfile -t assets < "$RUNNER_TEMP/release-assets"
+          # Fetch now, after approval: --verify-tag alone does not compare the source SHA.
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          test "$(git rev-parse "refs/tags/$TAG^{commit}")" = "$REVISION"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "refusing to overwrite existing release: $TAG" >&2
+            exit 1
+          fi
+          # Never edit/upload --clobber an earlier alpha.
+          gh release create "$TAG" "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --title "Autodarts $TAG" \
-            --notes "Validated alpha candidate. See PROVENANCE and SHA256SUMS." \
+            --notes "Validated alpha candidate. See provenance.json and SHA256SUMS." \
             --prerelease \
+            --latest=false \
             --verify-tag

@@ -15,9 +15,10 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net",
 tokio-tungstenite = "0.30"
 futures-util = "0.3"
 toml = "1.1"
-# Constrain the isolated host harness to the version in the host checkout's lockfile.
 parking_lot = "0.12"
-ort = "=2.0.0-rc.12"
+# Constrain the host version without re-enabling ort's native-TLS defaults.
+# The pinned niles-recognition dependency supplies the released feature set.
+ort = { version = "=2.0.0-rc.12", default-features = false }
 [[test]]
 name = "host_proof"
 path = "../tests/host_proof.rs"

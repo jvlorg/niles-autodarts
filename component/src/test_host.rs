@@ -187,26 +187,12 @@ pub mod niles {
             }
             thread_local! {
                 static CALLS: RefCell<Calls> = RefCell::new(Calls::default());
-                static NEXT_SESSION: RefCell<u32> = const { RefCell::new(7) };
-                static NEXT_REQUEST: RefCell<u64> = const { RefCell::new(11) };
             }
             pub fn reset() {
-                let session = NEXT_SESSION.with(|slot| {
-                    let mut value = slot.borrow_mut();
-                    let current = *value;
-                    *value = value.saturating_add(1);
-                    current
-                });
-                let request = NEXT_REQUEST.with(|slot| {
-                    let mut value = slot.borrow_mut();
-                    let current = *value;
-                    *value = value.saturating_add(128);
-                    current
-                });
                 CALLS.with(|slot| {
                     *slot.borrow_mut() = Calls {
-                        next_session: session,
-                        next_request: request,
+                        next_session: 7,
+                        next_request: 11,
                         ..Calls::default()
                     }
                 });

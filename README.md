@@ -11,7 +11,7 @@ Standalone [Niles](https://github.com/MarkNygaard/niles) add-on for local Autoda
 - `Each dart → Total` submits every eligible local dart immediately and then the cached total. The released Niles scheduler has one replaceable pending slot, so accepted requests may finish as `Replaced`; this mode does not guarantee transport delivery of every utterance.
 - `Total only` submits only the eligible total at the first explicit partial/full removal marker.
 - Empty `numThrows == 0` is the clean baseline. Clear, shrink, malformed input, corrections, reconnects, disablement, settings changes, overflow, and stale generations suppress ambiguous commentary until a new baseline.
-- Accepted, pending, terminal host outcomes, polling errors, and locally discarded requests are distinct. No automatic retry is performed. Pending bookkeeping is bounded to 128 requests and terminal history to 32 records.
+- Accepted, pending, terminal host outcomes, polling errors, and locally discarded requests are distinct. No utterance is retried. Session reopening can wait for asynchronous host close; subsequent callbacks retry only that unavailable open. Pending bookkeeping is bounded to 128 requests and terminal history to 32 records.
 - Local totals are simple detection-derived sums, not authoritative game scores. Bull handling is synthetic-tested; live miss encoding remains unverified.
 
 ## Evidence and commands
@@ -19,6 +19,10 @@ Standalone [Niles](https://github.com/MarkNygaard/niles) add-on for local Autoda
 Core parser/session tests and `cargo run -p autodarts-core --example announcement_replay` provide deterministic policy evidence. Component callback tests use isolated fake WIT imports and cover accepted/pending/terminal outcomes, polling recovery, lifecycle invalidation, oversized frames, and overflow recovery. The compiled host proof uses the pinned Niles checkout's real speech scheduler and an output recorder; installed-host compatibility, live Board Manager ordering/miss encoding, household routing, and audible playback remain open installation checks.
 
 The sole host pin is `scripts/niles-host-revision` (`4f3c0a10b2accd022354a23b9f961b222c27eb56`). `bash scripts/prepare-host.sh` verifies a detached, clean checkout under `.cache/niles` and builds its CLI. `bash scripts/verify.sh --quick` runs local Rust checks, the replay, maintained probe, and guidance-file equality. Full verification additionally runs pinned WIT comparison, packaging, the exact-package host diagnostic, the compiled proof, checksum verification, and workflow syntax checks.
+
+Use `bash scripts/package.sh --tag v0.1.0-alpha.1 --output dist/v0.1.0-alpha.1` from a clean tracked source commit and a fresh output directory. The package contains the exact checked manifest/Wasm, `SHA256SUMS`, and `provenance.json`. Full verification also needs `uv`, `actionlint`, the Wasm target and the pinned host's build prerequisites. The compiled synthetic fixture requires free loopback port 3180; the candidate's declared WebSocket permissions do not allow an ephemeral port. [Announcement-path evidence](docs/announcement-path.md) records the exercised scenarios and remaining proof boundaries.
+
+Before publication, a repository administrator must configure required reviewers on the `alpha-release` environment, then set repository variable `ALPHA_RELEASE_APPROVAL_CONFIGURED=true`. The workflow fails closed without that acknowledgment; the variable alone does not configure protection. Manual `publish=false` validates without entering publication. No protected-environment approval or publication is implied by local workflow checks.
 
 The alpha package route, after an approved publication, is [Niles Autodarts v0.1.0-alpha.1](https://github.com/jvlorg/niles-autodarts/releases/tag/v0.1.0-alpha.1): Niles Preview → add the exact release URL → inspect the manifest and permissions → explicitly approve. This URL is an installation route, not evidence that publication has occurred.
 
