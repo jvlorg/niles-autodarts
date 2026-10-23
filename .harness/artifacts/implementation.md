@@ -9,6 +9,7 @@
 - Deterministic core replay covers both announcement modes over three collections.
 - Component fake-import tests cover lifecycle transitions, status correlation, polling recovery, overflow, reset, and open/submit rejection.
 - Exact candidate packaging, host diagnostic, verification modes, and approval-gated alpha workflow are checked in.
+- Local implementation commit: `99bb508` (`Implement Niles integration candidate`).
 
 ## Verification run
 
@@ -17,6 +18,8 @@
 - `cargo +1.99.0 check -p autodarts-core --examples`: passed.
 - `cargo +1.99.0 run -p autodarts-core --example announcement_replay`: passed; both modes emitted expected synthetic policy submissions.
 - `PATH=/home/harness/.local/bin:$PATH bash scripts/verify.sh --quick`: passed. Workspace tests: 25 core tests and 15 component tests. Wasm release build passed. Maintained loopback probe: 8 tests passed. `cmp AGENTS.md CLAUDE.md` passed.
+- `scripts/package.sh --tag v0.1.0-alpha.1 --output dist/v0.1.0-alpha.1`: passed. Pinned CLI `plugin check` accepted the exact manifest and Wasm; provenance and SHA256SUMS were generated.
+- `python3 scripts/verify-host.py /home/harness/projects/.cargo-target/niles-autodarts/debug/niles --package-dir dist/v0.1.0-alpha.1`: passed. The real Niles CLI rendered synthetic `/api/version` and `/api/state` responses through the exact package.
 
 ## Full-chain status
 
