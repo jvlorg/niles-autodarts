@@ -227,15 +227,23 @@ pub struct AnnouncementRequest {
     pub room: String,
     pub deduplication_key: String,
 }
+
+/// Why the selected delivery adapter did not accept a submission.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeliveryError {
     Unavailable,
     Failed(String),
 }
+
+/// Submission boundary for local announcement policy.
+///
+/// `Ok(())` means that this adapter accepted the request. It does not prove
+/// host transport, synthesis, arbitration, playback, or human audibility.
 pub trait AnnouncementDelivery {
     fn deliver(&mut self, request: &AnnouncementRequest) -> Result<(), DeliveryError>;
 }
-/// Production placeholder that explicitly fails rather than claiming delivery.
+
+/// Production placeholder that explicitly fails rather than claiming acceptance.
 #[derive(Default)]
 pub struct UnavailableDelivery;
 impl AnnouncementDelivery for UnavailableDelivery {
@@ -244,6 +252,7 @@ impl AnnouncementDelivery for UnavailableDelivery {
     }
 }
 
+/// Deterministic adapter that records accepted submissions for policy tests.
 #[derive(Default)]
 pub struct RecordingDelivery {
     pub requests: Vec<AnnouncementRequest>,
@@ -266,7 +275,8 @@ pub enum AnnouncementResult {
     NoAudience,
     Rejected(&'static str),
     Duplicate,
-    Delivered(usize),
+    /// Number of requests accepted by the selected adapter, not delivered.
+    Accepted(usize),
     DeliveryFailed(DeliveryError),
 }
 

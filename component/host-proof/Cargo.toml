@@ -7,15 +7,17 @@ publish = false
 [workspace]
 
 [dependencies]
-niles-core = { path = "/home/jleth/projects/niles-nil43/crates/niles-core" }
-niles-plugins = { path = "/home/jleth/projects/niles-nil43/crates/niles-plugins" }
+niles-core = { path = "../../.cache/niles/crates/niles-core" }
+niles-plugins = { path = "../../.cache/niles/crates/niles-plugins" }
+niles-scheduler = { path = "../../.cache/niles/crates/niles-scheduler" }
+niles-tts = { path = "../../.cache/niles/crates/niles-tts" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "sync"] }
 tokio-tungstenite = "0.30"
 futures-util = "0.3"
 toml = "1.1"
 # Constrain the isolated host harness to the version in the host checkout's lockfile.
+parking_lot = "0.12"
 ort = "=2.0.0-rc.12"
-
 [[test]]
 name = "host_proof"
 path = "../tests/host_proof.rs"

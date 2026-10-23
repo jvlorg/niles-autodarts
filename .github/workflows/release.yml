@@ -1,0 +1,104 @@
+name: Alpha release
+
+on:
+  push:
+    tags:
+      - "v*-alpha.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing immutable alpha tag to validate"
+        required: true
+        type: string
+      publish:
+        description: "Publish after validation and protected approval"
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      publish: ${{ steps.tag.outputs.publish }}
+    steps:
+      - id: tag
+        shell: bash
+        env:
+          EVENT_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+          MANUAL_PUBLISH: ${{ inputs.publish || 'false' }}
+        run: |
+          set -euo pipefail
+          tag="$EVENT_TAG"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]] || {
+            echo "invalid alpha tag: $tag" >&2
+            exit 2
+          }
+          publish=false
+          if [[ "${{ github.event_name }}" == push || "$MANUAL_PUBLISH" == true ]]; then
+            publish=true
+          fi
+          {
+            printf 'tag=%s\n' "$tag"
+            printf 'publish=%s\n' "$publish"
+          } >> "$GITHUB_OUTPUT"
+
+  validate:
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+          fetch-depth: 0
+      - name: Verify immutable tag checkout
+        shell: bash
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          test "$(git describe --tags --exact-match HEAD)" = "$TAG"
+      - name: Run complete local verification
+        run: bash scripts/verify.sh
+      - name: Upload exact candidate and evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha-${{ needs.resolve.outputs.tag }}
+          path: |
+            dist/${{ needs.resolve.outputs.tag }}/
+            verification/
+          if-no-files-found: error
+
+  publish:
+    needs: [resolve, validate]
+    if: needs.resolve.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment: alpha-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: alpha-${{ needs.resolve.outputs.tag }}
+          path: artifact
+      - name: Publish approved prerelease unchanged
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate="artifact/dist/$TAG"
+          test -f "$candidate/niles-integration.toml"
+          test -f "$candidate/integration.wasm"
+          gh release create "$TAG" "$candidate/niles-integration.toml" "$candidate/integration.wasm" "$candidate/SHA256SUMS" "$candidate/PROVENANCE" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Autodarts $TAG" \
+            --notes "Validated alpha candidate. See PROVENANCE and SHA256SUMS." \
+            --prerelease \
+            --verify-tag

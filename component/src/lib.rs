@@ -20,7 +20,7 @@ use bindings::niles::integration::{
     log, timers,
 };
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 #[cfg(test)]
 use test_host::niles::integration::speech_stream;
 #[cfg(test)]
@@ -52,11 +52,57 @@ struct Runtime {
     snapshot: Snapshot,
     command_status: Option<String>,
     speech_session: Option<u32>,
-    speech_status: Option<String>,
-    speech_requests: BTreeMap<u64, String>,
+    speech_generation: u64,
+    speech_pending: BTreeMap<u64, SpeechRequest>,
+    speech_history: VecDeque<SpeechCompletion>,
+    speech_poll_error: Option<String>,
+    speech_submission_error: Option<String>,
     speech_enabled: bool,
     websocket_id: Option<u32>,
     websocket_status: Option<String>,
+}
+
+const MAX_PENDING_SPEECH: usize = 128;
+const MAX_SPEECH_HISTORY: usize = 32;
+
+#[derive(Clone, Debug)]
+struct SpeechRequest {
+    generation: u64,
+    logical_key: String,
+    kind: SpeechRequestKind,
+    text: String,
+}
+
+#[derive(Clone, Debug)]
+struct SpeechCompletion {
+    generation: u64,
+    host_request: u64,
+    logical_key: String,
+    kind: SpeechRequestKind,
+    text: String,
+    outcome: SpeechOutcome,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SpeechRequestKind {
+    Dart,
+    Total,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum SpeechOutcome {
+    Pending,
+    Delivered,
+    Busy,
+    Quiet,
+    Expired,
+    Failed,
+    Cancelled,
+    Replaced,
+    RateLimited,
+    NoSatellite,
+    DiscardedOnReset,
 }
 fn setting_text(key: &str) -> Result<String, String> {
     match config::get(key) {
@@ -279,6 +325,14 @@ fn connect_websocket(config: &Config, enabled: bool) -> Result<Option<u32>, Stri
 
 /// The bounded event ingress shared by host callbacks and synthetic tests.
 fn ingest_announcement_json(json: &[u8]) -> autodarts_core::local_score::JourneyResult {
+    let pending_full = RUNTIME.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|runtime| runtime.speech_pending.len() >= MAX_PENDING_SPEECH)
+    });
+    if pending_full {
+        poll_speech();
+    }
     RUNTIME.with(|slot| {
         let mut slot = slot.borrow_mut();
         let Some(runtime) = slot.as_mut() else {
@@ -286,18 +340,38 @@ fn ingest_announcement_json(json: &[u8]) -> autodarts_core::local_score::Journey
         };
         let mut delivery = SpeechDelivery {
             session: runtime.speech_session,
-            requests: &mut runtime.speech_requests,
-            status: &mut runtime.speech_status,
+            generation: runtime.speech_generation,
+            pending: &mut runtime.speech_pending,
+            submission_error: &mut runtime.speech_submission_error,
         };
         runtime
             .announcement_session
             .ingest_json(json, &mut delivery)
     })
 }
+
+fn request_kind(key: &str) -> SpeechRequestKind {
+    if key.contains(":dart:") {
+        SpeechRequestKind::Dart
+    } else if key.contains(":total:") {
+        SpeechRequestKind::Total
+    } else {
+        SpeechRequestKind::Unknown
+    }
+}
+
+fn remember_completion(runtime: &mut Runtime, completion: SpeechCompletion) {
+    runtime.speech_history.push_back(completion);
+    while runtime.speech_history.len() > MAX_SPEECH_HISTORY {
+        runtime.speech_history.pop_front();
+    }
+}
+
 struct SpeechDelivery<'a> {
     session: Option<u32>,
-    requests: &'a mut BTreeMap<u64, String>,
-    status: &'a mut Option<String>,
+    generation: u64,
+    pending: &'a mut BTreeMap<u64, SpeechRequest>,
+    submission_error: &'a mut Option<String>,
 }
 impl autodarts_core::AnnouncementDelivery for SpeechDelivery<'_> {
     fn deliver(
@@ -305,23 +379,57 @@ impl autodarts_core::AnnouncementDelivery for SpeechDelivery<'_> {
         request: &autodarts_core::AnnouncementRequest,
     ) -> Result<(), autodarts_core::DeliveryError> {
         let Some(session) = self.session else {
-            *self.status = Some("Speech stream unavailable".into());
+            *self.submission_error = Some("Speech stream unavailable".into());
             return Err(autodarts_core::DeliveryError::Unavailable);
         };
+        if self.pending.len() >= MAX_PENDING_SPEECH {
+            *self.submission_error =
+                Some("Speech request tracking full; submission rejected".into());
+            return Err(autodarts_core::DeliveryError::Failed(
+                "speech request tracking full".into(),
+            ));
+        }
         match speech_stream::submit(session, &request.text) {
             Ok(id) => {
-                self.requests.insert(id, request.deduplication_key.clone());
-                *self.status = Some(format!("Speech request {id}: pending"));
+                self.pending.insert(
+                    id,
+                    SpeechRequest {
+                        generation: self.generation,
+                        logical_key: request.deduplication_key.clone(),
+                        kind: request_kind(&request.deduplication_key),
+                        text: request.text.clone(),
+                    },
+                );
+                *self.submission_error = None;
                 Ok(())
             }
             Err(error) => {
                 let message = format!("Speech submit failed: {error:?}");
-                *self.status = Some(message.clone());
+                *self.submission_error = Some(message.clone());
                 Err(autodarts_core::DeliveryError::Failed(message))
             }
         }
     }
 }
+
+fn map_speech_outcome(
+    outcome: &bindings::niles::integration::speech_stream::Outcome,
+) -> SpeechOutcome {
+    use bindings::niles::integration::speech_stream::Outcome;
+    match outcome {
+        Outcome::Pending => SpeechOutcome::Pending,
+        Outcome::Delivered => SpeechOutcome::Delivered,
+        Outcome::Busy => SpeechOutcome::Busy,
+        Outcome::Quiet => SpeechOutcome::Quiet,
+        Outcome::Expired => SpeechOutcome::Expired,
+        Outcome::Failed => SpeechOutcome::Failed,
+        Outcome::Cancelled => SpeechOutcome::Cancelled,
+        Outcome::Replaced => SpeechOutcome::Replaced,
+        Outcome::RateLimited => SpeechOutcome::RateLimited,
+        Outcome::NoSatellite => SpeechOutcome::NoSatellite,
+    }
+}
+
 fn poll_speech() {
     RUNTIME.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -331,27 +439,79 @@ fn poll_speech() {
         };
         match speech_stream::poll(session) {
             Ok(statuses) => {
+                runtime.speech_poll_error = None;
                 for item in statuses {
-                    let terminal = !matches!(
-                        &item.outcome,
-                        bindings::niles::integration::speech_stream::Outcome::Pending
-                    );
-                    let key = if terminal {
-                        runtime.speech_requests.remove(&item.request)
-                    } else {
-                        runtime.speech_requests.get(&item.request).cloned()
-                    };
-                    runtime.speech_status = Some(format!(
-                        "Speech request {}{}: {:?}",
-                        item.request,
-                        key.map(|value| format!(" ({value})")).unwrap_or_default(),
-                        item.outcome
-                    ));
+                    let outcome = map_speech_outcome(&item.outcome);
+                    if outcome == SpeechOutcome::Pending {
+                        continue;
+                    }
+                    if let Some(request) = runtime.speech_pending.remove(&item.request) {
+                        remember_completion(
+                            runtime,
+                            SpeechCompletion {
+                                generation: request.generation,
+                                host_request: item.request,
+                                logical_key: request.logical_key,
+                                kind: request.kind,
+                                text: request.text,
+                                outcome,
+                            },
+                        );
+                    }
                 }
             }
-            Err(error) => runtime.speech_status = Some(format!("Speech poll failed: {error:?}")),
+            Err(error) => {
+                runtime.speech_poll_error = Some(format!("Speech poll failed: {error:?}"));
+            }
         }
     });
+}
+fn speech_status_line(runtime: &Runtime) -> String {
+    if let Some(error) = &runtime.speech_submission_error {
+        return error.clone();
+    }
+    if let Some(error) = &runtime.speech_poll_error {
+        return error.clone();
+    }
+    let pending = if runtime.speech_pending.is_empty() {
+        None
+    } else {
+        Some(format!("Speech pending: {}", runtime.speech_pending.len()))
+    };
+    if !runtime.speech_history.is_empty() {
+        let recent = runtime
+            .speech_history
+            .iter()
+            .map(|record| {
+                format!(
+                    "{} gen {} {:?} {} ({}) : {:?}",
+                    record.host_request,
+                    record.generation,
+                    record.kind,
+                    record.text,
+                    record.logical_key,
+                    record.outcome
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return match pending {
+            Some(pending) => format!("{pending}; Speech terminal history: {recent}"),
+            None => format!("Speech terminal history: {recent}"),
+        };
+    }
+    if let Some(pending) = pending {
+        return pending;
+    }
+    if runtime.speech_enabled {
+        if runtime.speech_session.is_some() {
+            "Speech stream open".into()
+        } else {
+            "Speech stream unavailable".into()
+        }
+    } else {
+        "Speech stream disabled".into()
+    }
 }
 struct HostTransport;
 impl Transport for HostTransport {
@@ -414,6 +574,29 @@ fn render_tree(snapshot: &Snapshot, command_status: Option<&str>) -> UiTree {
     }
     UiTree { nodes }
 }
+fn invalidate_speech(runtime: &mut Runtime, reason: &str) {
+    runtime.speech_generation = runtime.speech_generation.saturating_add(1);
+    let pending = std::mem::take(&mut runtime.speech_pending);
+    for (host_request, request) in pending {
+        remember_completion(
+            runtime,
+            SpeechCompletion {
+                generation: request.generation,
+                host_request,
+                logical_key: request.logical_key,
+                kind: request.kind,
+                text: request.text,
+                outcome: SpeechOutcome::DiscardedOnReset,
+            },
+        );
+    }
+    let session = runtime.speech_session.take();
+    runtime.speech_poll_error = None;
+    runtime.speech_submission_error = Some(format!("Speech requests discarded on {reason}"));
+    if let Some(session) = session {
+        speech_stream::close(session);
+    }
+}
 impl Guest for Plugin {
     fn init() -> Result<(), String> {
         Self::stop();
@@ -435,14 +618,14 @@ impl Guest for Plugin {
         } else {
             (None, Some("Board event stream disabled".into()))
         };
+        let mut speech_open_error = None;
         let speech_session = if speech_enabled {
             match speech_stream::open(&config.room) {
                 Ok(session) => Some(session),
                 Err(error) => {
-                    log::log(
-                        log::Level::Warn,
-                        &format!("Could not open speech stream: {error:?}"),
-                    );
+                    let message = format!("Speech stream open failed: {error:?}");
+                    log::log(log::Level::Warn, &message);
+                    speech_open_error = Some(message);
                     None
                 }
             }
@@ -464,16 +647,11 @@ impl Guest for Plugin {
                 },
                 command_status: None,
                 speech_session,
-                speech_status: if speech_enabled {
-                    Some(if speech_session.is_some() {
-                        "Speech stream open".into()
-                    } else {
-                        "Speech stream unavailable".into()
-                    })
-                } else {
-                    Some("Speech stream disabled".into())
-                },
-                speech_requests: BTreeMap::new(),
+                speech_generation: 0,
+                speech_pending: BTreeMap::new(),
+                speech_history: VecDeque::new(),
+                speech_poll_error: None,
+                speech_submission_error: speech_open_error,
                 speech_enabled,
                 websocket_id,
                 websocket_status,
@@ -594,7 +772,7 @@ impl Guest for Plugin {
                             runtime.snapshot.clone(),
                             runtime.command_status.clone(),
                             runtime.announcements.clone(),
-                            runtime.speech_status.clone(),
+                            speech_status_line(runtime),
                             runtime.speech_enabled,
                             runtime.websocket_status.clone(),
                         )
@@ -629,7 +807,7 @@ impl Guest for Plugin {
                     "disabled"
                 }
             ),
-            speech_status.unwrap_or_else(|| "Speech status unavailable".into()),
+            speech_status,
             websocket_status.unwrap_or_else(|| "Board event stream status unavailable".into()),
         ];
         for line in lines {
@@ -690,16 +868,30 @@ impl Guest for Plugin {
             match status {
                 bindings::niles::integration::websocket::ConnectionStatus::Connected => {
                     runtime.announcement_session.connection_reset();
+                    if runtime.speech_enabled && runtime.speech_session.is_none() {
+                        match speech_stream::open(&runtime.config.room) {
+                            Ok(session) => {
+                                runtime.speech_session = Some(session);
+                                runtime.speech_submission_error = None;
+                            }
+                            Err(error) => {
+                                runtime.speech_submission_error =
+                                    Some(format!("Speech stream reopen failed: {error:?}"));
+                            }
+                        }
+                    }
                     runtime.websocket_status =
                         Some("Board event stream connected; baseline required".into());
                 }
                 bindings::niles::integration::websocket::ConnectionStatus::Disconnected(reason) => {
                     runtime.announcement_session.connection_reset();
+                    invalidate_speech(runtime, "Board event disconnect");
                     runtime.websocket_status =
                         Some(format!("Board event stream reconnecting: {reason}"));
                 }
                 bindings::niles::integration::websocket::ConnectionStatus::Failed(kind) => {
                     runtime.announcement_session.connection_reset();
+                    invalidate_speech(runtime, "Board event failure");
                     let reason = match kind {
                         bindings::niles::integration::websocket::FailureKind::Policy => {
                             "policy denied"
@@ -715,6 +907,7 @@ impl Guest for Plugin {
                     runtime.websocket_status = Some(format!("Board event stream failed: {reason}"));
                 }
                 bindings::niles::integration::websocket::ConnectionStatus::Overflow(count) => {
+                    invalidate_speech(runtime, "Board event overflow");
                     runtime.announcement_session.connection_reset();
                     runtime.websocket_status = Some(format!(
                         "Board event stream overflow ({count}); baseline required"
@@ -744,12 +937,11 @@ impl Guest for Plugin {
     }
     fn stop() {
         RUNTIME.with(|slot| {
-            if let Some(runtime) = slot.borrow_mut().take() {
-                if let Some(conn) = runtime.websocket_id {
+            if let Some(mut runtime) = slot.borrow_mut().take() {
+                let conn = runtime.websocket_id.take();
+                invalidate_speech(&mut runtime, "stop");
+                if let Some(conn) = conn {
                     websocket::close(conn);
-                }
-                if let Some(session) = runtime.speech_session {
-                    speech_stream::close(session);
                 }
             }
         });

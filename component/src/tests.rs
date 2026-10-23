@@ -228,40 +228,42 @@ fn announcement_settings_room_speech_lifecycle_and_synthetic_delivery() {
         ingest_announcement_json(FULL.as_bytes()),
         autodarts_core::local_score::JourneyResult::Total(Some(20))
     );
-    assert_eq!(speech_stream::calls().submitted, [(7, "20".into())]);
+    let request = speech_stream::calls().submitted_ids[0].1;
     speech_stream::set_statuses(vec![
         bindings::niles::integration::speech_stream::RequestStatus {
-            request: 11,
+            request,
             outcome: bindings::niles::integration::speech_stream::Outcome::Pending,
         },
     ]);
+    assert!(RUNTIME.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|runtime| runtime.speech_pending.len() == 1)
+    }));
     http::set_replies(initial(false));
     Plugin::on_timer("poll".into());
-    assert!(render_text().iter().any(|line| {
-        line.contains("request 11")
-            && line.contains("Pending")
-            && line.contains("epoch:0:collection:")
-    }));
+    let pending_lines = render_text();
+    assert!(
+        pending_lines.iter().any(|line| line == "Speech pending: 1"),
+        "{pending_lines:?}"
+    );
 
     speech_stream::set_statuses(vec![
         bindings::niles::integration::speech_stream::RequestStatus {
-            request: 11,
+            request,
             outcome: bindings::niles::integration::speech_stream::Outcome::Replaced,
         },
     ]);
     http::set_replies(initial(false));
     Plugin::on_timer("poll".into());
     let lines = render_text();
-    assert!(
-        lines
-            .iter()
-            .any(|line| line.contains("request 11") && line.contains("Replaced"))
-    );
+    assert!(lines.iter().any(|line| line.contains("Replaced")));
     assert!(
         lines
             .iter()
             .any(|line| line.contains("epoch:0:collection:"))
     );
+    let old_session = speech_stream::calls().opened_sessions[0].0;
 
     config::set("room", config::SettingValue::Text("office".into()));
     config::set(
@@ -270,7 +272,7 @@ fn announcement_settings_room_speech_lifecycle_and_synthetic_delivery() {
     );
     http::set_replies(initial(false));
     Plugin::init().unwrap();
-    assert_eq!(speech_stream::calls().closed, [7]);
+    assert_eq!(speech_stream::calls().closed, [old_session]);
     assert_eq!(speech_stream::calls().opened_rooms, ["living_room"]);
     assert!(
         render_text()
@@ -410,7 +412,14 @@ fn websocket_disconnect_requires_new_baseline_and_ignores_stale_callbacks() {
         41,
         bindings::niles::integration::websocket::Message::Text(REMOVED.into()),
     );
-    assert_eq!(speech_stream::calls().submitted, [(7, "20".into())]);
+    assert_eq!(
+        speech_stream::calls()
+            .submitted
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect::<Vec<_>>(),
+        ["20"]
+    );
     websocket::status(
         41,
         bindings::niles::integration::websocket::ConnectionStatus::Failed(
@@ -485,6 +494,209 @@ fn reconfigure_disable_and_stop_close_websocket() {
     assert_eq!(websocket::calls().opened.len(), 2);
     Plugin::stop();
     assert_eq!(websocket::calls().closed, [41, 42]);
+}
+
+#[test]
+fn speech_outcomes_are_correlated_and_terminal_history_is_bounded() {
+    setup(initial(false));
+    enable_announcements("each_dart_then_total");
+    Plugin::init().unwrap();
+    for _ in 0..10 {
+        ingest_announcement_json(EMPTY_EVENT.as_bytes());
+        ingest_announcement_json(ONE_DART.as_bytes());
+        ingest_announcement_json(REMOVED.as_bytes());
+    }
+    let calls = speech_stream::calls();
+    let ids = calls
+        .submitted_ids
+        .iter()
+        .map(|(_, id, _)| *id)
+        .collect::<Vec<_>>();
+    let outcomes = [
+        bindings::niles::integration::speech_stream::Outcome::Delivered,
+        bindings::niles::integration::speech_stream::Outcome::Busy,
+        bindings::niles::integration::speech_stream::Outcome::Quiet,
+        bindings::niles::integration::speech_stream::Outcome::Expired,
+        bindings::niles::integration::speech_stream::Outcome::Failed,
+        bindings::niles::integration::speech_stream::Outcome::Cancelled,
+        bindings::niles::integration::speech_stream::Outcome::Replaced,
+        bindings::niles::integration::speech_stream::Outcome::RateLimited,
+        bindings::niles::integration::speech_stream::Outcome::NoSatellite,
+        bindings::niles::integration::speech_stream::Outcome::Delivered,
+        bindings::niles::integration::speech_stream::Outcome::Delivered,
+        bindings::niles::integration::speech_stream::Outcome::Busy,
+        bindings::niles::integration::speech_stream::Outcome::Quiet,
+        bindings::niles::integration::speech_stream::Outcome::Expired,
+        bindings::niles::integration::speech_stream::Outcome::Failed,
+        bindings::niles::integration::speech_stream::Outcome::Cancelled,
+        bindings::niles::integration::speech_stream::Outcome::Replaced,
+        bindings::niles::integration::speech_stream::Outcome::RateLimited,
+        bindings::niles::integration::speech_stream::Outcome::NoSatellite,
+        bindings::niles::integration::speech_stream::Outcome::Delivered,
+    ];
+    speech_stream::set_statuses(
+        ids.into_iter()
+            .zip(outcomes)
+            .map(
+                |(request, outcome)| bindings::niles::integration::speech_stream::RequestStatus {
+                    request,
+                    outcome,
+                },
+            )
+            .collect(),
+    );
+    http::set_replies(initial(false));
+    Plugin::on_timer("poll".into());
+    let lines = render_text();
+    assert!(
+        lines.iter().any(|line| line.contains("Delivered")),
+        "{lines:?}"
+    );
+    assert!(lines.iter().any(|line| line.contains("Replaced")));
+    assert!(lines.iter().any(|line| line.contains("NoSatellite")));
+    assert!(RUNTIME.with(|slot| {
+        let runtime = slot.borrow();
+        runtime.as_ref().is_some_and(|runtime| {
+            runtime.speech_pending.is_empty() && runtime.speech_history.len() <= MAX_SPEECH_HISTORY
+        })
+    }));
+}
+
+#[test]
+fn speech_poll_errors_preserve_pending_requests_and_recover() {
+    setup(initial(false));
+    enable_announcements("total_only");
+    Plugin::init().unwrap();
+    ingest_announcement_json(EMPTY_EVENT.as_bytes());
+    ingest_announcement_json(ONE_DART.as_bytes());
+    ingest_announcement_json(REMOVED.as_bytes());
+    let request = speech_stream::calls().submitted_ids[0].1;
+    speech_stream::set_status_errors([
+        bindings::niles::integration::types::HostError::Unavailable("temporary".into()),
+    ]);
+    http::set_replies(initial(false));
+    Plugin::on_timer("poll".into());
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("Speech poll failed"))
+    );
+    assert!(RUNTIME.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|runtime| runtime.speech_pending.contains_key(&request))
+    }));
+
+    speech_stream::set_statuses(vec![
+        bindings::niles::integration::speech_stream::RequestStatus {
+            request,
+            outcome: bindings::niles::integration::speech_stream::Outcome::Delivered,
+        },
+    ]);
+    http::set_replies(initial(false));
+    Plugin::on_timer("poll".into());
+    assert!(render_text().iter().any(|line| line.contains("Delivered")));
+}
+
+#[test]
+fn open_and_submit_rejections_are_visible_without_fake_terminal_success() {
+    setup(initial(false));
+    enable_announcements("total_only");
+    speech_stream::set_open_error(Some(
+        bindings::niles::integration::types::HostError::Unavailable("open".into()),
+    ));
+    Plugin::init().unwrap();
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("Speech stream open failed"))
+    );
+
+    setup(initial(false));
+    enable_announcements("each_dart_then_total");
+    Plugin::init().unwrap();
+    speech_stream::set_submit_errors([bindings::niles::integration::types::HostError::Limit(
+        "submit".into(),
+    )]);
+    ingest_announcement_json(EMPTY_EVENT.as_bytes());
+    let result = ingest_announcement_json(ONE_DART.as_bytes());
+    assert!(
+        matches!(
+            result,
+            autodarts_core::local_score::JourneyResult::DeliveryFailed(_)
+        ),
+        "{result:?}"
+    );
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("Speech submit failed"))
+    );
+    assert!(RUNTIME.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|runtime| runtime.speech_pending.is_empty())
+    }));
+}
+
+#[test]
+fn exact_boundary_and_overflow_discard_stale_commentary_then_recover() {
+    setup(initial(false));
+    enable_announcements("total_only");
+    Plugin::init().unwrap();
+    let mut boundary = EMPTY_EVENT.to_owned();
+    boundary.push_str(&" ".repeat(64 * 1024 - boundary.len()));
+    assert_eq!(boundary.len(), 64 * 1024);
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text(boundary),
+    );
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text(ONE_DART.into()),
+    );
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text("x".repeat(64 * 1024 + 1)),
+    );
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text(REMOVED.into()),
+    );
+    assert!(speech_stream::calls().submitted.is_empty());
+
+    websocket::status(
+        41,
+        bindings::niles::integration::websocket::ConnectionStatus::Overflow(1),
+    );
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text(REMOVED.into()),
+    );
+    websocket::status(
+        41,
+        bindings::niles::integration::websocket::ConnectionStatus::Connected,
+    );
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text(EMPTY_EVENT.into()),
+    );
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text(ONE_DART.into()),
+    );
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text(REMOVED.into()),
+    );
+    assert_eq!(
+        speech_stream::calls()
+            .submitted
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect::<Vec<_>>(),
+        ["20"]
+    );
 }
 
 fn render_text() -> Vec<String> {
