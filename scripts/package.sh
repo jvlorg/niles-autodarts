@@ -22,10 +22,17 @@ if [[ "$tag" != "v${version}" ]]; then
   printf 'tag must be v%s\n' "$version" >&2
   exit 2
 fi
+if [[ -z "$output" ]]; then
+  usage
+  exit 2
+fi
 if [[ "$output" != /* ]]; then
   output="$root/$output"
 fi
-if [[ -z "$output" || "$output" != "$root/dist/"* ]]; then
+dist_root="$(realpath -m -- "$root/dist")"
+output="$(realpath -m -- "$output")"
+if [[ "$output" != "$dist_root/"* ]]; then
+  printf 'output must be inside %s\n' "$dist_root" >&2
   exit 2
 fi
 if [[ -e "$output" ]]; then

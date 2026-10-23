@@ -198,6 +198,15 @@ fn announcement_settings_room_speech_lifecycle_and_synthetic_delivery() {
         )]
     );
     assert_eq!(speech_stream::calls().opened_rooms, ["living_room"]);
+    let websocket_before = websocket::calls();
+    let speech_before = speech_stream::calls();
+    Plugin::init().unwrap();
+    let websocket_after = websocket::calls();
+    let speech_after = speech_stream::calls();
+    assert_eq!(websocket_after.opened, websocket_before.opened);
+    assert_eq!(websocket_after.closed, websocket_before.closed);
+    assert_eq!(speech_after.opened_sessions, speech_before.opened_sessions);
+    assert_eq!(speech_after.closed, speech_before.closed);
     let lines = render_text();
     assert!(
         lines

@@ -599,11 +599,39 @@ fn invalidate_speech(runtime: &mut Runtime, reason: &str) {
 }
 impl Guest for Plugin {
     fn init() -> Result<(), String> {
+        let config = match settings() {
+            Ok(config) => config,
+            Err(error) => {
+                Self::stop();
+                return Err(error);
+            }
+        };
+        let announcements = match announcement_settings(&config.room) {
+            Ok(announcements) => announcements,
+            Err(error) => {
+                Self::stop();
+                return Err(error);
+            }
+        };
+        let speech_enabled = match speech_enabled() {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                Self::stop();
+                return Err(error);
+            }
+        };
+        let unchanged = RUNTIME.with(|slot| {
+            slot.borrow().as_ref().is_some_and(|runtime| {
+                runtime.config == config
+                    && runtime.announcements == announcements
+                    && runtime.speech_enabled == speech_enabled
+            })
+        });
+        if unchanged {
+            return Ok(());
+        }
         Self::stop();
-        let config = settings()?;
-        let announcements = announcement_settings(&config.room)?;
         let announcements_enabled = announcements.enabled;
-        let speech_enabled = speech_enabled()?;
         let (websocket_id, websocket_status) = if announcements_enabled {
             match connect_websocket(&config) {
                 Ok(connection) => (
