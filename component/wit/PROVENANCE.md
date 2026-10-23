@@ -1,9 +1,10 @@
 # WIT provenance
 
-The checked-in file `niles-integration.wit` is copied from the frozen Niles integration 0.5 schema in the read-only Niles reference checkout.
+The checked-in `niles-integration.wit` is the released Niles 0.5 contract.
 
-- Niles reference checkout: `/home/jleth/projects/niles-nil43`, inspected commit `d9362f05f27bbe9e8ab83e530f352da08999a97b`.
-- Source: `schemas/niles-integration-0.5.wit`, which defines interface 0.5 and its room-bound `speech-stream` API.
-- Author contract cross-checked against `site/content/docs/writing-add-ons/manifest.mdx`, `host-api.mdx`, and `permissions.mdx` at that same checkout.
-- The reference identifies PRs #482 (speech stream) and #484 (tracked notification requests) as review-ready work, not merged/released/installed capabilities. This component uses 0.5 and does not import notifications.
-- Do not infer a released minimum Niles version supporting speech streams from this source snapshot; it is not recorded as an installable compatibility claim here.
+- Niles source checkout: `.cache/niles`, pinned by `scripts/niles-host-revision` to `4f3c0a10b2accd022354a23b9f961b222c27eb56`.
+- Source path: `schemas/niles-integration-0.5.wit`.
+- Comparison: `cmp component/wit/niles-integration.wit .cache/niles/schemas/niles-integration-0.5.wit`.
+- Digest at the pinned revision: `acb5a8c1fcc84810827fcc2612d3e055157ac64e0cfc0801fd4b29433efa6b70` for both files.
+- The WIT files are byte-for-byte equivalent at the pinned revision; the component retains interface `0.5` and adds no private host API.
+- Full verification repeats the comparison after `scripts/prepare-host.sh`; a mismatch fails before packaging or host proof.

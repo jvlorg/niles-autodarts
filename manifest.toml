@@ -1,7 +1,7 @@
 [package]
 name = "autodarts"
-version = "0.1.0"
-description = "Autodarts Board Manager status and detection controls with room-bound local speech commentary"
+version = "0.1.0-alpha.1"
+description = "Autodarts Board Manager status and detection controls with room-bound local speech commentary; Niles selects satellites."
 
 [[settings]]
 key = "address"
@@ -25,11 +25,11 @@ default = false
 [[settings]]
 key = "announcement_mode"
 type = "choice"
-default = "each_dart_then_total"
 options = [
     { value = "each_dart_then_total", label = "Each dart → Total" },
     { value = "total_only", label = "Total only" },
 ]
+
 [[settings]]
 key = "speech_stream_enabled"
 type = "boolean"

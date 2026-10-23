@@ -205,12 +205,7 @@ impl AnnouncementSettings {
             }
             None => None,
         };
-        if room.is_empty()
-            || room.len() > 64
-            || !room
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-        {
+        if room.len() > 64 || !valid_room(room) {
             return Err("invalid announcement room");
         }
         Ok(Self {
@@ -227,15 +222,23 @@ pub struct AnnouncementRequest {
     pub room: String,
     pub deduplication_key: String,
 }
+
+/// Why the selected delivery adapter did not accept a submission.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeliveryError {
     Unavailable,
     Failed(String),
 }
+
+/// Submission boundary for local announcement policy.
+///
+/// `Ok(())` means that this adapter accepted the request. It does not prove
+/// host transport, synthesis, arbitration, playback, or human audibility.
 pub trait AnnouncementDelivery {
     fn deliver(&mut self, request: &AnnouncementRequest) -> Result<(), DeliveryError>;
 }
-/// Production placeholder that explicitly fails rather than claiming delivery.
+
+/// Production placeholder that explicitly fails rather than claiming acceptance.
 #[derive(Default)]
 pub struct UnavailableDelivery;
 impl AnnouncementDelivery for UnavailableDelivery {
@@ -244,6 +247,7 @@ impl AnnouncementDelivery for UnavailableDelivery {
     }
 }
 
+/// Deterministic adapter that records accepted submissions for policy tests.
 #[derive(Default)]
 pub struct RecordingDelivery {
     pub requests: Vec<AnnouncementRequest>,
@@ -266,7 +270,8 @@ pub enum AnnouncementResult {
     NoAudience,
     Rejected(&'static str),
     Duplicate,
-    Delivered(usize),
+    /// Number of requests accepted by the selected adapter, not delivered.
+    Accepted(usize),
     DeliveryFailed(DeliveryError),
 }
 
@@ -275,25 +280,16 @@ pub fn poll<T: Transport>(config: &Config, transport: &mut T) -> Snapshot {
         transport,
         &config.endpoint("api/version"),
         config.timeout_ms,
-    ) {
-        Ok(response) => match decode_version(response) {
-            Ok(value) => value,
-            Err(error) => return Snapshot::unknown(error.stage, error.kind, error.http_status),
-        },
+    )
+    .and_then(decode_version)
+    {
+        Ok(value) => value,
         Err(error) => return Snapshot::unknown(error.stage, error.kind, error.http_status),
     };
-    let state = match get(transport, &config.endpoint("api/state"), config.timeout_ms) {
-        Ok(response) => match decode_state(response) {
-            Ok(value) => value,
-            Err(diagnostic) => {
-                return Snapshot {
-                    availability: Availability::Unavailable,
-                    version: Some(version),
-                    state: BoardState::Unknown,
-                    diagnostic: Some(diagnostic),
-                };
-            }
-        },
+    let state = match get(transport, &config.endpoint("api/state"), config.timeout_ms)
+        .and_then(decode_state)
+    {
+        Ok(state) => state,
         Err(diagnostic) => {
             return Snapshot {
                 availability: Availability::Unavailable,

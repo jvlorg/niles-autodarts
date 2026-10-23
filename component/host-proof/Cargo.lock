@@ -182,7 +182,10 @@ dependencies = [
  "futures-util",
  "niles-core",
  "niles-plugins",
+ "niles-scheduler",
+ "niles-tts",
  "ort",
+ "parking_lot",
  "tokio",
  "tokio-tungstenite",
  "toml",
@@ -805,7 +808,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid 0.9.6",
- "pem-rfc7468 0.7.0",
+ "pem-rfc7468",
  "zeroize",
 ]
 
@@ -816,7 +819,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a878c850e9e421b20262e9b41f9c860e4785fa07541c266b62ff9d1ef998a80a"
 dependencies = [
  "const-oid 0.10.2",
- "pem-rfc7468 1.0.0",
  "zeroize",
 ]
 
@@ -1082,21 +1084,6 @@ name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
-
-[[package]]
-name = "foreign-types"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6f339eb8adc052cd2ca78910fda869aefa38d22d5cb648e6485e4d3fc06f3b1"
-dependencies = [
- "foreign-types-shared",
-]
-
-[[package]]
-name = "foreign-types-shared"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "form_urlencoded"
@@ -2081,23 +2068,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
-name = "native-tls"
-version = "0.2.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "465500e14ea162429d264d44189adc38b199b62b1c21eea9f69e4b73cb03bbf2"
-dependencies = [
- "libc",
- "log",
- "openssl",
- "openssl-probe",
- "openssl-sys",
- "schannel",
- "security-framework",
- "security-framework-sys",
- "tempfile",
-]
-
-[[package]]
 name = "ndarray"
 version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2120,7 +2090,7 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "niles-artifacts"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2134,7 +2104,7 @@ dependencies = [
 
 [[package]]
 name = "niles-automations"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2152,7 +2122,7 @@ dependencies = [
 
 [[package]]
 name = "niles-calendar"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-imap",
  "async-trait",
@@ -2178,7 +2148,7 @@ dependencies = [
 
 [[package]]
 name = "niles-capabilities"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "serde",
  "serde_yaml",
@@ -2188,7 +2158,7 @@ dependencies = [
 
 [[package]]
 name = "niles-config"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2207,7 +2177,7 @@ dependencies = [
 
 [[package]]
 name = "niles-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -2216,7 +2186,7 @@ dependencies = [
 
 [[package]]
 name = "niles-db"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2241,7 +2211,7 @@ dependencies = [
 
 [[package]]
 name = "niles-groceries"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "niles-nemlig",
@@ -2253,7 +2223,7 @@ dependencies = [
 
 [[package]]
 name = "niles-history"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "niles-core",
@@ -2265,7 +2235,7 @@ dependencies = [
 
 [[package]]
 name = "niles-llm"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -2280,7 +2250,7 @@ dependencies = [
 
 [[package]]
 name = "niles-memory"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2291,7 +2261,7 @@ dependencies = [
 
 [[package]]
 name = "niles-mqtt"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "niles-core",
@@ -2305,7 +2275,7 @@ dependencies = [
 
 [[package]]
 name = "niles-nemlig"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -2320,7 +2290,7 @@ dependencies = [
 
 [[package]]
 name = "niles-notifications"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2334,7 +2304,7 @@ dependencies = [
 
 [[package]]
 name = "niles-plugins"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2372,7 +2342,7 @@ dependencies = [
 
 [[package]]
 name = "niles-presence"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2387,7 +2357,7 @@ dependencies = [
 
 [[package]]
 name = "niles-recognition"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2403,7 +2373,7 @@ dependencies = [
 
 [[package]]
 name = "niles-scheduler"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "niles-core",
@@ -2415,7 +2385,7 @@ dependencies = [
 
 [[package]]
 name = "niles-skills"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2426,7 +2396,7 @@ dependencies = [
 
 [[package]]
 name = "niles-stt"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "reqwest",
  "serde",
@@ -2437,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "niles-tls"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "rustls",
  "rustls-webpki 0.103.16",
@@ -2446,7 +2416,7 @@ dependencies = [
 
 [[package]]
 name = "niles-tools"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2477,7 +2447,7 @@ dependencies = [
 
 [[package]]
 name = "niles-training"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2492,7 +2462,7 @@ dependencies = [
 
 [[package]]
 name = "niles-tts"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "niles-core",
  "reqwest",
@@ -2504,7 +2474,7 @@ dependencies = [
 
 [[package]]
 name = "niles-weather"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2518,7 +2488,7 @@ dependencies = [
 
 [[package]]
 name = "niles-webpush"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -2539,7 +2509,7 @@ dependencies = [
 
 [[package]]
 name = "niles-websearch"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "html2text",
@@ -2642,47 +2612,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "openssl"
-version = "0.10.81"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77823a27f0babb03091cb9ed9ef80af3b39dbc82f97e8fa530374b7dafd87a45"
-dependencies = [
- "bitflags",
- "cfg-if",
- "foreign-types",
- "libc",
- "openssl-macros",
- "openssl-sys",
-]
-
-[[package]]
-name = "openssl-macros"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a948666b637a0f465e8564c73e89d4dde00d72d4d473cc972f390fc3dcee7d9c"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
-
-[[package]]
-name = "openssl-sys"
-version = "0.9.117"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b47e7e6bb2c38cd930d25a23b40fa52e068c10e85f3e03a7f5ba5aaca5713695"
-dependencies = [
- "cc",
- "libc",
- "pkg-config",
- "vcpkg",
-]
 
 [[package]]
 name = "ort"
@@ -2756,15 +2689,6 @@ name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412"
-dependencies = [
- "base64ct",
-]
-
-[[package]]
-name = "pem-rfc7468"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6305423e0e7738146434843d1694d621cce767262b2a86910beab705e4493d9"
 dependencies = [
  "base64ct",
 ]
@@ -4152,19 +4076,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
-name = "tempfile"
-version = "3.27.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
-dependencies = [
- "fastrand",
- "getrandom 0.4.3",
- "once_cell",
- "rustix",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "tendril"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4570,16 +4481,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a7ac20be9b7726e0bbdbf974c059676d9acb1cd414961f570a4e8231cacd7fc"
 dependencies = [
  "base64 0.23.1",
- "der 0.8.2",
  "log",
- "native-tls",
  "percent-encoding",
  "rustls",
  "rustls-pki-types",
  "socks",
  "ureq-proto",
  "utf8-zero",
- "webpki-root-certs",
  "webpki-roots 1.0.10",
 ]
 
@@ -5054,15 +4962,6 @@ dependencies = [
  "phf_codegen",
  "string_cache",
  "string_cache_codegen",
-]
-
-[[package]]
-name = "webpki-root-certs"
-version = "1.0.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
-dependencies = [
- "rustls-pki-types",
 ]
 
 [[package]]

@@ -1,7 +1,16 @@
 use autodarts_core::local_score::JourneyResult;
 use autodarts_core::{
-    AnnouncementDelivery, AnnouncementSession, AnnouncementSettings, RecordingDelivery,
+    AnnouncementDelivery, AnnouncementMode, AnnouncementSession, AnnouncementSettings,
+    RecordingDelivery,
 };
+
+const BASELINE: &str = r#"{"type":"state","data":{"running":true,"numThrows":0,"throws":[]}}"#;
+const DART_ONE: &str = r#"{"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"number":20,"multiplier":1}}]}}"#;
+const DART_TWO: &str = r#"{"type":"state","data":{"running":true,"numThrows":2,"throws":[{"segment":{"number":20,"multiplier":1}},{"segment":{"number":5,"multiplier":1}}]}}"#;
+const DART_THREE: &str = r#"{"type":"state","data":{"running":true,"numThrows":3,"throws":[{"segment":{"number":20,"multiplier":1}},{"segment":{"number":5,"multiplier":1}},{"segment":{"number":1,"multiplier":1}}]}}"#;
+const CLEAR: &str = r#"{"type":"state","data":{"running":true,"numThrows":0,"throws":[]}}"#;
+const PARTIAL: &str = r#"{"type":"motion_state","data":{"isTakeoutPartial":true}}"#;
+const FULL: &str = r#"{"type":"motion_state","data":{"isTakeoutFull":true}}"#;
 
 fn run(
     session: &mut AnnouncementSession,
@@ -11,87 +20,82 @@ fn run(
     session.ingest_json(json.as_bytes(), delivery)
 }
 
-fn main() {
-    let settings = AnnouncementSettings::new(true, Some("each_dart_then_total"), "living_room")
+fn replay_mode(mode: AnnouncementMode) -> RecordingDelivery {
+    let mode_name = match mode {
+        AnnouncementMode::EachDartThenTotal => "each_dart_then_total",
+        AnnouncementMode::TotalOnly => "total_only",
+    };
+    let settings = AnnouncementSettings::new(true, Some(mode_name), "living_room")
         .expect("valid replay settings");
     let mut session = AnnouncementSession::new(settings);
     let mut delivery = RecordingDelivery::default();
-    println!(
-        "Synthetic source-derived examples (not captures); settings → JSON → session → recording delivery:"
-    );
     for collection in 1..=3 {
         assert_eq!(
-            run(
-                &mut session,
-                &mut delivery,
-                r#"{"type":"state","data":{"running":true,"numThrows":0,"throws":[]}}"#
-            ),
+            run(&mut session, &mut delivery, BASELINE),
             JourneyResult::Baseline
         );
         assert_eq!(
-            run(
-                &mut session,
-                &mut delivery,
-                r#"{"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"number":20,"multiplier":1}}]}}"#
-            ),
-            JourneyResult::Dart(Some(20))
+            run(&mut session, &mut delivery, DART_ONE),
+            JourneyResult::Dart((mode == AnnouncementMode::EachDartThenTotal).then_some(20))
         );
-        if collection == 2 {
+        assert_eq!(
+            run(&mut session, &mut delivery, DART_TWO),
+            JourneyResult::Dart((mode == AnnouncementMode::EachDartThenTotal).then_some(5))
+        );
+        assert_eq!(
+            run(&mut session, &mut delivery, DART_THREE),
+            JourneyResult::Dart((mode == AnnouncementMode::EachDartThenTotal).then_some(1))
+        );
+        if mode == AnnouncementMode::TotalOnly && collection == 2 {
             assert_eq!(
-                run(
-                    &mut session,
-                    &mut delivery,
-                    r#"{"type":"motion_state","data":{"isTakeoutPartial":true}}"#
-                ),
-                JourneyResult::Total(Some(20))
-            );
-            assert_eq!(
-                run(
-                    &mut session,
-                    &mut delivery,
-                    r#"{"type":"motion_state","data":{"isTakeoutFull":true}}"#
-                ),
+                run(&mut session, &mut delivery, CLEAR),
                 JourneyResult::Suppressed
             );
-        } else {
-            assert_eq!(
-                run(
-                    &mut session,
-                    &mut delivery,
-                    r#"{"type":"motion_state","data":{"isTakeoutFull":true}}"#
-                ),
-                JourneyResult::Total(Some(20))
-            );
         }
-        println!("collection {collection}: total 20");
+        let marker = if collection == 2 { PARTIAL } else { FULL };
+        assert_eq!(
+            run(&mut session, &mut delivery, marker),
+            JourneyResult::Total(Some(26))
+        );
+        assert_eq!(
+            run(&mut session, &mut delivery, marker),
+            JourneyResult::Suppressed
+        );
+        println!("{mode_name} collection {collection}: policy total 26");
     }
+    delivery
+}
+
+fn main() {
+    println!(
+        "Synthetic source-derived replay (not captures): settings → JSON → session → recording"
+    );
+    let each = replay_mode(AnnouncementMode::EachDartThenTotal);
+    assert_eq!(each.requests.len(), 12);
     assert_eq!(
-        delivery
+        each.requests
+            .iter()
+            .map(|request| request.text.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "20", "5", "1", "26", "20", "5", "1", "26", "20", "5", "1", "26"
+        ]
+    );
+    let total = replay_mode(AnnouncementMode::TotalOnly);
+    assert_eq!(total.requests.len(), 3);
+    assert_eq!(
+        total
             .requests
             .iter()
-            .map(|r| r.text.as_str())
+            .map(|request| request.text.as_str())
             .collect::<Vec<_>>(),
-        ["20", "20", "20", "20", "20", "20"]
+        ["26", "26", "26"]
     );
-    let totals: Vec<_> = delivery
-        .requests
-        .iter()
-        .filter(|r| r.deduplication_key.contains(":total:"))
-        .map(|r| r.deduplication_key.as_str())
-        .collect();
-    assert_eq!(totals.len(), 3);
-    assert_eq!(
-        totals
-            .iter()
-            .collect::<std::collections::BTreeSet<_>>()
-            .len(),
-        3
-    );
-    for request in &delivery.requests {
+    for request in each.requests.iter().chain(total.requests.iter()) {
         println!(
-            "request audience={:?} text={} key={}",
+            "policy submission room={} text={} key={}",
             request.room, request.text, request.deduplication_key
         );
     }
-    println!("production delivery remains unavailable; recording adapter only");
+    println!("These are policy submissions; they do not prove transport or audibility.");
 }

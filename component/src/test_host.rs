@@ -168,16 +168,34 @@ pub mod niles {
                 speech_stream::RequestStatus, types::HostError,
             };
             use std::cell::RefCell;
+            use std::collections::VecDeque;
+
             #[derive(Default, Clone)]
             pub struct Calls {
                 pub opened_rooms: Vec<String>,
+                pub opened_sessions: Vec<(u32, String)>,
                 pub submitted: Vec<(u32, String)>,
+                pub submitted_ids: Vec<(u32, u64, String)>,
                 pub closed: Vec<u32>,
                 pub statuses: Vec<RequestStatus>,
+                pub status_calls: Vec<(u32, u64)>,
+                next_session: u32,
+                next_request: u64,
+                open_error: Option<HostError>,
+                submit_errors: VecDeque<HostError>,
+                status_errors: VecDeque<HostError>,
             }
-            thread_local! { static CALLS: RefCell<Calls> = RefCell::new(Calls::default()); }
+            thread_local! {
+                static CALLS: RefCell<Calls> = RefCell::new(Calls::default());
+            }
             pub fn reset() {
-                CALLS.with(|slot| *slot.borrow_mut() = Calls::default());
+                CALLS.with(|slot| {
+                    *slot.borrow_mut() = Calls {
+                        next_session: 7,
+                        next_request: 11,
+                        ..Calls::default()
+                    }
+                });
             }
             pub fn calls() -> Calls {
                 CALLS.with(|slot| slot.borrow().clone())
@@ -185,16 +203,51 @@ pub mod niles {
             pub fn set_statuses(statuses: Vec<RequestStatus>) {
                 CALLS.with(|slot| slot.borrow_mut().statuses = statuses);
             }
+            pub fn set_open_error(error: Option<HostError>) {
+                CALLS.with(|slot| slot.borrow_mut().open_error = error);
+            }
+            pub fn set_submit_errors(errors: impl IntoIterator<Item = HostError>) {
+                CALLS.with(|slot| slot.borrow_mut().submit_errors = errors.into_iter().collect());
+            }
+            pub fn set_status_errors(errors: impl IntoIterator<Item = HostError>) {
+                CALLS.with(|slot| slot.borrow_mut().status_errors = errors.into_iter().collect());
+            }
             pub fn open(room: &str) -> Result<u32, HostError> {
-                CALLS.with(|slot| slot.borrow_mut().opened_rooms.push(room.into()));
-                Ok(7)
+                CALLS.with(|slot| {
+                    let mut calls = slot.borrow_mut();
+                    calls.opened_rooms.push(room.into());
+                    if let Some(error) = &calls.open_error {
+                        return Err(error.clone());
+                    }
+                    let session = calls.next_session;
+                    calls.next_session = calls.next_session.saturating_add(1);
+                    calls.opened_sessions.push((session, room.into()));
+                    Ok(session)
+                })
             }
             pub fn submit(session: u32, text: &str) -> Result<u64, HostError> {
-                CALLS.with(|slot| slot.borrow_mut().submitted.push((session, text.into())));
-                Ok(11)
+                CALLS.with(|slot| {
+                    let mut calls = slot.borrow_mut();
+                    let request = calls.next_request;
+                    if let Some(error) = calls.submit_errors.pop_front() {
+                        return Err(error);
+                    }
+                    calls.next_request = calls.next_request.saturating_add(1);
+                    calls.submitted.push((session, text.into()));
+                    calls.submitted_ids.push((session, request, text.into()));
+                    Ok(request)
+                })
             }
-            pub fn poll(_: u32) -> Result<Vec<RequestStatus>, HostError> {
-                Ok(CALLS.with(|slot| slot.borrow().statuses.clone()))
+            pub fn poll(session: u32) -> Result<Vec<RequestStatus>, HostError> {
+                CALLS.with(|slot| {
+                    let mut calls = slot.borrow_mut();
+                    let next = calls.status_calls.len() as u64;
+                    calls.status_calls.push((session, next));
+                    if let Some(error) = calls.status_errors.pop_front() {
+                        return Err(error);
+                    }
+                    Ok(calls.statuses.clone())
+                })
             }
             pub fn close(session: u32) {
                 CALLS.with(|slot| slot.borrow_mut().closed.push(session));
