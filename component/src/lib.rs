@@ -114,10 +114,14 @@ fn settings() -> Result<Config, String> {
     let address = setting_text("address")?;
     let room = setting_text("room")?;
     let interval = match config::get("poll_interval") {
-        Some(config::SettingValue::Number(value)) if value.is_finite() && value.fract() == 0.0 => {
+        None => 15,
+        Some(config::SettingValue::Number(value)) => {
+            if !value.is_finite() || value.fract() != 0.0 {
+                return Err("Invalid polling interval.".into());
+            }
             u32::try_from(value as i64).map_err(|_| "Invalid polling interval.".to_string())?
         }
-        _ => 15,
+        Some(_) => return Err("poll_interval must be a number.".into()),
     };
     Config::new(
         &address,
@@ -463,17 +467,16 @@ fn poll_speech() {
     });
 }
 fn speech_status_line(runtime: &Runtime) -> String {
+    let mut parts = Vec::new();
     if let Some(error) = &runtime.speech_submission_error {
-        return error.clone();
+        parts.push(error.clone());
     }
     if let Some(error) = &runtime.speech_poll_error {
-        return error.clone();
+        parts.push(error.clone());
     }
-    let pending = if runtime.speech_pending.is_empty() {
-        None
-    } else {
-        Some(format!("Speech pending: {}", runtime.speech_pending.len()))
-    };
+    if !runtime.speech_pending.is_empty() {
+        parts.push(format!("Speech pending: {}", runtime.speech_pending.len()));
+    }
     if !runtime.speech_history.is_empty() {
         let recent = runtime
             .speech_history
@@ -491,13 +494,10 @@ fn speech_status_line(runtime: &Runtime) -> String {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        return match pending {
-            Some(pending) => format!("{pending}; Speech terminal history: {recent}"),
-            None => format!("Speech terminal history: {recent}"),
-        };
+        parts.push(format!("Speech terminal history: {recent}"));
     }
-    if let Some(pending) = pending {
-        return pending;
+    if !parts.is_empty() {
+        return parts.join("; ");
     }
     if runtime.speech_enabled {
         if runtime.speech_session.is_some() {

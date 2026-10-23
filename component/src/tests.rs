@@ -181,6 +181,17 @@ fn composed_unsupported_unconfigured_and_recovery_paths() {
 }
 
 #[test]
+fn invalid_poll_interval_fails_closed_instead_of_defaulting() {
+    setup([]);
+    config::set("poll_interval", config::SettingValue::Number(4.5));
+    assert!(Plugin::init().is_err());
+
+    setup([]);
+    config::set("poll_interval", config::SettingValue::Boolean(true));
+    assert!(Plugin::init().is_err());
+}
+
+#[test]
 fn announcement_settings_room_speech_lifecycle_and_synthetic_delivery() {
     setup(initial(false));
     config::set("announcements_enabled", config::SettingValue::Boolean(true));
@@ -605,6 +616,26 @@ fn speech_poll_errors_preserve_pending_requests_and_recover() {
     http::set_replies(initial(false));
     Plugin::on_timer("poll".into());
     assert!(render_text().iter().any(|line| line.contains("Delivered")));
+}
+#[test]
+fn speech_submission_error_does_not_hide_pending_count() {
+    setup(initial(false));
+    enable_announcements("total_only");
+    Plugin::init().unwrap();
+    ingest_announcement_json(EMPTY_EVENT.as_bytes());
+    ingest_announcement_json(ONE_DART.as_bytes());
+    ingest_announcement_json(REMOVED.as_bytes());
+
+    speech_stream::set_submit_errors([bindings::niles::integration::types::HostError::Limit(
+        "submit".into(),
+    )]);
+    ingest_announcement_json(EMPTY_EVENT.as_bytes());
+    ingest_announcement_json(ONE_DART.as_bytes());
+    ingest_announcement_json(REMOVED.as_bytes());
+
+    assert!(render_text().iter().any(|line| {
+        line.contains("Speech submit failed") && line.contains("Speech pending: 1")
+    }));
 }
 
 #[test]
