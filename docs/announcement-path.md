@@ -32,3 +32,19 @@ Synthetic eligibility and recording output do not establish installed-host compa
 - `bash -n` on each changed shell script and actionlint 1.7.7 on the workflow passed. A throwaway harness executed the workflow's actual tag, artifact-integrity, moved-tag and approval-flag guards: valid assets accepted; invalid tags, missing/duplicate checksums, corrupted assets, wrong source/host, extra files and moved tags rejected; manual `publish=false` remained nonpublishing. No GitHub approval/publication run was performed.
 
 The recorded compiled burst accepted host IDs `1/2/3/4`, texts `20/5/1/26`, logical keys `epoch:1:collection:2:dart:1`, `:dart:2`, `:dart:3`, `:total:3`. Outcomes were `Replaced/Replaced/Replaced/Delivered`; recorded transport contained only `26`. Ordered input delivered `20/5/1/26`, with a subsequent collection's `20` proving repeated markers did not repeat a total. TotalOnly delivered `26/20` across clear-before-marker and repeated-removal scenarios. Closing during preparation produced actual host `Cancelled`; reconnect and room switch each suppressed nonempty startup collections before delivering a fresh-baseline `20`. The manager-only active-output scenario delivered `20/26` and replaced pending `5`.
+
+## Clean-source candidate verification
+
+Source commit `7b34e16b8049cbdb41943c6ee7fadf718370349e` passed the complete `bash scripts/verify.sh` chain (exit 0) with actionlint 1.7.7 on `PATH` and `CARGO_TARGET_DIR=/home/harness/projects/.cargo-target/niles-autodarts`. The source was tracked-clean; the previous generated candidate was preserved separately rather than overwritten. Packaging built and checked the exact staged Wasm, the HTTP/render diagnostic and compiled scheduler proof consumed that candidate, and `sha256sum --check SHA256SUMS` passed. The compiler was `rustc 1.99.0 (b940084d7 2026-09-28)`; the CLI and runtime used pinned host `4f3c0a10b2accd022354a23b9f961b222c27eb56`.
+
+| Candidate asset | SHA-256 |
+|---|---|
+| `integration.wasm` | `6439a8cf58d04e7ecbb20556171f86356a1cbb985f165b054575b23958d50fe5` |
+| `niles-integration.toml` | `b1c1e4335175e5cfca14ddbd1d21a18c85c16736853f65dc0ff1634f6db550a6` |
+| `provenance.json` | `41992fea86017570031bee0320709d95bede9768799ba3be8e8cb9ea65e83a58` |
+
+The provenance records that source commit, not the later evidence-only documentation commit. It records the actual temporary staging path passed to `plugin check`; assets are atomically moved into `dist/v0.1.0-alpha.1` after successful validation without rebuilding.
+
+Fresh-checkout proof also passed (exit 0): `git clone --no-hardlinks --single-branch <local-repository> /tmp/autodarts-fresh-review-4x7rab2f/source`, then `bash scripts/verify.sh` from that checkout with the same tool paths and shared Cargo build cache. No `.cache/niles`, target directory or candidate was copied. The preparation script fetched the canonical remote at the full pinned SHA and rebuilt the host from that fresh checkout; runtime proof and CLI checking used that same tree. Both manifest and Wasm hashes exactly match the table above. Fresh-run provenance hash was `f7463feb86e7929f722e591f403f9265289558c1e0f523d0018de9213654d213`; it differs because the actual checker staging path differs. The temporary checkout was removed after recording these results.
+
+Release remains blocked on administrator setup: the read-only GitHub environments query returned `total_count: 0`. Configure `alpha-release` with required reviewers before setting `ALPHA_RELEASE_APPROVAL_CONFIGURED=true`. Local guards and successful synthetic checks are not protected-environment approval, installation, household routing or audible evidence. Earlier command transcripts are incomplete; that limits historical command auditing and is not evidence of skipped hooks or migrations.
