@@ -33,6 +33,10 @@ jobs:
         run: |
           set -euo pipefail
           tag="$EVENT_TAG"
+          [[ "$tag" == "v0.1.0-alpha.1" ]] || {
+            echo "unsupported candidate tag: $tag (expected v0.1.0-alpha.1)" >&2
+            exit 2
+          }
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]] || {
             echo "invalid alpha tag: $tag" >&2
             exit 2
@@ -69,9 +73,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: alpha-${{ needs.resolve.outputs.tag }}
-          path: |
-            dist/${{ needs.resolve.outputs.tag }}/
-            verification/
+          path: dist/0.1.0-alpha.1/
           if-no-files-found: error
 
   publish:
@@ -93,9 +95,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          candidate="artifact/dist/$TAG"
-          test -f "$candidate/niles-integration.toml"
+          candidate="$(find artifact -type f -name niles-integration.toml -print -quit)"
+          test -n "$candidate"
+          candidate="${candidate%/*}"
           test -f "$candidate/integration.wasm"
+          test -f "$candidate/SHA256SUMS"
+          test -f "$candidate/PROVENANCE"
+          (cd "$candidate" && sha256sum --check SHA256SUMS)
           gh release create "$TAG" "$candidate/niles-integration.toml" "$candidate/integration.wasm" "$candidate/SHA256SUMS" "$candidate/PROVENANCE" \
             --repo "$GITHUB_REPOSITORY" \
             --title "Autodarts $TAG" \
