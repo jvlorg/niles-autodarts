@@ -280,25 +280,16 @@ pub fn poll<T: Transport>(config: &Config, transport: &mut T) -> Snapshot {
         transport,
         &config.endpoint("api/version"),
         config.timeout_ms,
-    ) {
-        Ok(response) => match decode_version(response) {
-            Ok(value) => value,
-            Err(error) => return Snapshot::unknown(error.stage, error.kind, error.http_status),
-        },
+    )
+    .and_then(decode_version)
+    {
+        Ok(value) => value,
         Err(error) => return Snapshot::unknown(error.stage, error.kind, error.http_status),
     };
-    let state = match get(transport, &config.endpoint("api/state"), config.timeout_ms) {
-        Ok(response) => match decode_state(response) {
-            Ok(value) => value,
-            Err(diagnostic) => {
-                return Snapshot {
-                    availability: Availability::Unavailable,
-                    version: Some(version),
-                    state: BoardState::Unknown,
-                    diagnostic: Some(diagnostic),
-                };
-            }
-        },
+    let state = match get(transport, &config.endpoint("api/state"), config.timeout_ms)
+        .and_then(decode_state)
+    {
+        Ok(state) => state,
         Err(diagnostic) => {
             return Snapshot {
                 availability: Availability::Unavailable,

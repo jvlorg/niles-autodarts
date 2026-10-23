@@ -612,21 +612,25 @@ fn invalidate_speech(runtime: &mut Runtime, reason: &str) {
 }
 
 fn reopen_speech(runtime: &mut Runtime) {
+    if !(runtime.announcements.enabled
+        && runtime.speech_enabled
+        && runtime.speech_session.is_none())
+    {
+        return;
+    }
     runtime.speech_reopen_pending = false;
-    if runtime.announcements.enabled && runtime.speech_enabled && runtime.speech_session.is_none() {
-        match speech_stream::open(&runtime.config.room) {
-            Ok(session) => {
-                runtime.speech_session = Some(session);
-                runtime.speech_submission_error = None;
-            }
-            Err(error) => {
-                // close is asynchronous in the released host; Busy maps to
-                // Unavailable until its old owner finishes. Retry opening on
-                // later ingress/timer callbacks, never replay an utterance.
-                runtime.speech_reopen_pending = matches!(error, types::HostError::Unavailable(_));
-                runtime.speech_submission_error =
-                    Some(format!("Speech stream reopen failed: {error:?}"));
-            }
+    match speech_stream::open(&runtime.config.room) {
+        Ok(session) => {
+            runtime.speech_session = Some(session);
+            runtime.speech_submission_error = None;
+        }
+        Err(error) => {
+            // close is asynchronous in the released host; Busy maps to
+            // Unavailable until its old owner finishes. Retry opening on
+            // later ingress/timer callbacks, never replay an utterance.
+            runtime.speech_reopen_pending = matches!(error, types::HostError::Unavailable(_));
+            runtime.speech_submission_error =
+                Some(format!("Speech stream reopen failed: {error:?}"));
         }
     }
 }
@@ -996,7 +1000,6 @@ fn settings_interval() -> u32 {
     RUNTIME.with(|slot| {
         slot.borrow()
             .as_ref()
-            .map(|runtime| runtime.config.poll_interval_secs)
-            .unwrap_or(15)
+            .map_or(15, |runtime| runtime.config.poll_interval_secs)
     })
 }
