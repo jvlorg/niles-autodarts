@@ -168,7 +168,7 @@ pub mod niles {
                 speech_stream::RequestStatus, types::HostError,
             };
             use std::cell::RefCell;
-            use std::collections::{BTreeMap, VecDeque};
+            use std::collections::VecDeque;
 
             #[derive(Default, Clone)]
             pub struct Calls {
@@ -177,7 +177,6 @@ pub mod niles {
                 pub submitted: Vec<(u32, String)>,
                 pub submitted_ids: Vec<(u32, u64, String)>,
                 pub closed: Vec<u32>,
-                pub close_failures: Vec<u32>,
                 pub statuses: Vec<RequestStatus>,
                 pub status_calls: Vec<(u32, u64)>,
                 next_session: u32,
@@ -185,8 +184,6 @@ pub mod niles {
                 open_error: Option<HostError>,
                 submit_errors: VecDeque<HostError>,
                 status_errors: VecDeque<HostError>,
-                status_sequences: BTreeMap<u64, VecDeque<Result<RequestStatus, HostError>>>,
-                close_error: Option<HostError>,
             }
             thread_local! {
                 static CALLS: RefCell<Calls> = RefCell::new(Calls::default());
@@ -263,23 +260,11 @@ pub mod niles {
                     if let Some(error) = calls.status_errors.pop_front() {
                         return Err(error);
                     }
-                    let mut statuses = calls.statuses.clone();
-                    for sequence in calls.status_sequences.values_mut() {
-                        if let Some(result) = sequence.pop_front() {
-                            statuses.push(result?);
-                        }
-                    }
-                    Ok(statuses)
+                    Ok(calls.statuses.clone())
                 })
             }
             pub fn close(session: u32) {
-                CALLS.with(|slot| {
-                    let mut calls = slot.borrow_mut();
-                    calls.closed.push(session);
-                    if calls.close_error.is_some() {
-                        calls.close_failures.push(session);
-                    }
-                });
+                CALLS.with(|slot| slot.borrow_mut().closed.push(session));
             }
         }
         pub mod websocket {

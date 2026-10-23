@@ -205,12 +205,7 @@ impl AnnouncementSettings {
             }
             None => None,
         };
-        if room.is_empty()
-            || room.len() > 64
-            || !room
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-        {
+        if room.len() > 64 || !valid_room(room) {
             return Err("invalid announcement room");
         }
         Ok(Self {

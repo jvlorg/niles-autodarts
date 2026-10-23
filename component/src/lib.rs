@@ -313,13 +313,9 @@ fn websocket_url(config: &Config) -> Result<(String, &'static str), String> {
     Ok((url.to_string(), grant))
 }
 
-fn connect_websocket(config: &Config, enabled: bool) -> Result<Option<u32>, String> {
-    if !enabled {
-        return Ok(None);
-    }
+fn connect_websocket(config: &Config) -> Result<u32, String> {
     let (url, grant) = websocket_url(config)?;
     websocket::connect(grant, &url, &[])
-        .map(Some)
         .map_err(|error| format!("Could not open Board Manager event stream: {error:?}"))
 }
 
@@ -556,12 +552,8 @@ fn map_http(error: http::HttpError) -> HttpFailure {
         _ => HttpFailure::Connection,
     }
 }
-fn render_tree(snapshot: &Snapshot, command_status: Option<&str>) -> UiTree {
-    let mut nodes = vec![Node {
-        kind: NodeKind::Stack,
-        children: Vec::new(),
-    }];
-    for line in diagnostics_text(snapshot, command_status) {
+fn append_text_nodes(nodes: &mut Vec<Node>, lines: impl IntoIterator<Item = String>) {
+    for line in lines {
         let index = nodes.len() as u32;
         nodes[0].children.push(index);
         nodes.push(Node {
@@ -572,6 +564,14 @@ fn render_tree(snapshot: &Snapshot, command_status: Option<&str>) -> UiTree {
             children: Vec::new(),
         });
     }
+}
+
+fn render_tree(snapshot: &Snapshot, command_status: Option<&str>) -> UiTree {
+    let mut nodes = vec![Node {
+        kind: NodeKind::Stack,
+        children: Vec::new(),
+    }];
+    append_text_nodes(&mut nodes, diagnostics_text(snapshot, command_status));
     UiTree { nodes }
 }
 fn invalidate_speech(runtime: &mut Runtime, reason: &str) {
@@ -605,8 +605,11 @@ impl Guest for Plugin {
         let announcements_enabled = announcements.enabled;
         let speech_enabled = speech_enabled()?;
         let (websocket_id, websocket_status) = if announcements_enabled {
-            match connect_websocket(&config, true) {
-                Ok(connection) => (connection, Some("Board event stream connecting".into())),
+            match connect_websocket(&config) {
+                Ok(connection) => (
+                    Some(connection),
+                    Some("Board event stream connecting".into()),
+                ),
                 Err(error) => {
                     log::log(log::Level::Warn, &error);
                     (
@@ -810,17 +813,7 @@ impl Guest for Plugin {
             speech_status,
             websocket_status.unwrap_or_else(|| "Board event stream status unavailable".into()),
         ];
-        for line in lines {
-            let index = tree.nodes.len() as u32;
-            tree.nodes[0].children.push(index);
-            tree.nodes.push(Node {
-                kind: NodeKind::Text(TextBlock {
-                    value: line,
-                    muted: false,
-                }),
-                children: Vec::new(),
-            });
-        }
+        append_text_nodes(&mut tree.nodes, lines);
         Ok(tree)
     }
     fn on_action(
