@@ -567,7 +567,10 @@ async fn captured_replay(mode: &str, expected: &[&str], label: &str) {
     let capture = fixture_frames(true);
     send(&mut socket, &capture[..12]).await;
     proof
-        .policy_event("Policy readiness: collecting (0 darts)", "BaselineEstablished")
+        .policy_event(
+            "Policy readiness: collecting (0 darts)",
+            "BaselineEstablished",
+        )
         .await;
     assert!(proof.host.trace.lock().requests.is_empty());
     assert!(proof.output.prepared.lock().is_empty());
