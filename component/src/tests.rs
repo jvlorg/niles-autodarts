@@ -198,7 +198,13 @@ fn delayed_startup_schedule_is_truthful_for_ack_and_timeout_dispatch() {
     ))
     .unwrap();
     assert_eq!(schedule["reported_delay_seconds"], 15.575831);
+    let scenarios = schedule["scenarios"].as_array().unwrap();
     for dispatch in ["http_2xx", "response_timeout"] {
+        let scenario = scenarios
+            .iter()
+            .find(|scenario| scenario["dispatch"] == dispatch)
+            .unwrap();
+        let events = scenario["events"].as_array().unwrap();
         setup(initial(false));
         Plugin::init().unwrap();
         if dispatch == "http_2xx" {
@@ -216,29 +222,66 @@ fn delayed_startup_schedule_is_truthful_for_ack_and_timeout_dispatch() {
         assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_ok());
         assert_eq!(http::requests().len(), requests_after_dispatch);
 
-        for index in 0..15 {
-            let running = index == 0;
-            http::append_replies([response(&format!(
-                r#"{{"status":"Starting","running":{running}}}"#
-            ))]);
-            Plugin::on_timer(latest_timer("detection-poll:"));
-            assert_eq!(
-                devices::calls().upserts.last().unwrap().state.on,
-                Some(false)
-            );
+        let mut elapsed_polls = 0usize;
+        let mut previous_body = None;
+        for (event_index, event) in events.iter().enumerate() {
+            let target_poll = event["at_seconds"].as_f64().unwrap().ceil() as usize;
+            let body = serde_json::to_string(&event["data"]).unwrap();
+            let final_event = event_index + 1 == events.len();
+            if target_poll == 0 {
+                http::append_replies([response(&body)]);
+                Plugin::on_timer(latest_timer("detection-poll:"));
+                elapsed_polls = 0;
+            } else {
+                while elapsed_polls < target_poll {
+                    let poll_body = if elapsed_polls + 1 == target_poll {
+                        &body
+                    } else {
+                        previous_body.as_ref().unwrap()
+                    };
+                    http::append_replies([response(poll_body)]);
+                    Plugin::on_timer(latest_timer("detection-poll:"));
+                    elapsed_polls += 1;
+                    if !final_event {
+                        assert_eq!(
+                            devices::calls().upserts.last().unwrap().state.on,
+                            Some(false)
+                        );
+                    }
+                }
+            }
+            previous_body = Some(body);
+            if final_event {
+                assert_eq!(
+                    devices::calls().upserts.last().unwrap().state.on,
+                    Some(true)
+                );
+            }
         }
-        http::append_replies([response(r#"{"status":"Started","running":true}"#)]);
-        Plugin::on_timer(latest_timer("detection-poll:"));
-        assert_eq!(
-            devices::calls().upserts.last().unwrap().state.on,
-            Some(true)
-        );
         assert!(
             render_text()
                 .iter()
                 .any(|line| line.contains("running confirmed"))
         );
     }
+}
+
+#[test]
+fn starting_running_true_does_not_confirm_component_detection() {
+    setup(initial(false));
+    Plugin::init().unwrap();
+    http::set_replies([Ok(http::Response {
+        status: 204,
+        headers: vec![],
+        body: vec![],
+    })]);
+    assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_ok());
+    http::append_replies([response(r#"{"status":"Starting","running":true}"#)]);
+    Plugin::on_timer(latest_timer("detection-poll:"));
+    assert_eq!(
+        devices::calls().upserts.last().unwrap().state.on,
+        Some(false)
+    );
 }
 
 #[test]
@@ -275,6 +318,31 @@ fn expired_startup_suppresses_duplicates_until_fresh_readback_and_accepts_late_c
         render_text()
             .iter()
             .any(|line| line.contains("running confirmed"))
+    );
+}
+
+#[test]
+fn unavailable_detection_readback_keeps_polling_until_recovery() {
+    setup(initial(false));
+    Plugin::init().unwrap();
+    http::set_replies([Ok(http::Response {
+        status: 204,
+        headers: vec![],
+        body: vec![],
+    })]);
+    assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_ok());
+    http::fail_next(http::HttpError::Timeout);
+    Plugin::on_timer(latest_timer("detection-poll:"));
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("state timeout"))
+    );
+    http::append_replies([response(r#"{"status":"Started","running":true}"#)]);
+    Plugin::on_timer(latest_timer("detection-poll:"));
+    assert_eq!(
+        devices::calls().upserts.last().unwrap().state.on,
+        Some(true)
     );
 }
 

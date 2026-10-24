@@ -48,6 +48,7 @@ struct Plugin;
 export!(Plugin);
 thread_local! { static RUNTIME: RefCell<Option<Runtime>> = const { RefCell::new(None) }; }
 thread_local! { static SPEECH_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+thread_local! { static DETECTION_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
 struct Runtime {
     announcements: autodarts_core::AnnouncementSettings,
     announcement_session: autodarts_core::AnnouncementSession,
@@ -435,7 +436,11 @@ fn finish_detection(runtime: &mut Runtime, desired: bool) {
     }
 }
 
-fn apply_detection_snapshot(runtime: &mut Runtime, snapshot: Snapshot) -> Result<(), String> {
+fn apply_detection_snapshot(
+    runtime: &mut Runtime,
+    snapshot: Snapshot,
+    definitive: bool,
+) -> Result<(), String> {
     let snapshot = normalize_snapshot(snapshot);
     if runtime.detection.is_none() {
         runtime.snapshot = snapshot;
@@ -446,6 +451,10 @@ fn apply_detection_snapshot(runtime: &mut Runtime, snapshot: Snapshot) -> Result
             || "state readback unavailable".into(),
             |error| format!("{} {}", error.stage, error.kind),
         ));
+        if let Some(operation) = runtime.detection.as_mut() {
+            runtime.command_status = Some(pending_status(operation, &runtime.snapshot));
+        }
+        schedule_detection(runtime);
         return report(runtime);
     }
 
@@ -455,9 +464,11 @@ fn apply_detection_snapshot(runtime: &mut Runtime, snapshot: Snapshot) -> Result
         .detection
         .as_ref()
         .map(|operation| operation.desired);
-    let confirmed = desired.is_some_and(|desired| confirms(&runtime.snapshot, desired));
+    let confirmed =
+        definitive && desired.is_some_and(|desired| confirms(&runtime.snapshot, desired));
     if let Some(operation) = runtime.detection.as_mut() {
-        if let Some(observed) = observed_running(&runtime.snapshot)
+        if definitive
+            && let Some(observed) = observed_running(&runtime.snapshot)
             && runtime.snapshot.availability == Availability::Available
             && !is_starting(&runtime.snapshot)
         {
@@ -505,7 +516,7 @@ fn on_detection_timer(runtime: &mut Runtime, id: &str) {
     }
     runtime.detection_poll_timer = None;
     let snapshot = poll_state(&runtime.config, &mut HostTransport);
-    let _ = apply_detection_snapshot(runtime, snapshot);
+    let _ = apply_detection_snapshot(runtime, snapshot, true);
     ui::invalidate("board");
 }
 
@@ -516,7 +527,7 @@ fn poll_now() -> Result<(), String> {
             .as_mut()
             .ok_or_else(|| "Autodarts is not configured.".to_string())?;
         let snapshot = normalize_snapshot(poll(&runtime.config, &mut HostTransport));
-        apply_detection_snapshot(runtime, snapshot)?;
+        apply_detection_snapshot(runtime, snapshot, true)?;
         if matches!(
             runtime.snapshot.state,
             BoardState::Observed {
@@ -545,8 +556,12 @@ fn poll_now() -> Result<(), String> {
     })
 }
 fn begin_detection(runtime: &mut Runtime, desired: bool) -> Result<(), String> {
-    runtime.detection_generation = runtime.detection_generation.saturating_add(1);
-    let token = runtime.detection_generation;
+    let token = DETECTION_GENERATION.with(|generation| {
+        let next = generation.get().saturating_add(1);
+        generation.set(next);
+        next
+    });
+    runtime.detection_generation = token;
     runtime.detection = Some(DetectionOperation {
         token,
         desired,
@@ -617,7 +632,7 @@ fn ingest_detection_observation(json: &[u8]) {
             state,
             diagnostic: None,
         };
-        if let Err(error) = apply_detection_snapshot(runtime, snapshot) {
+        if let Err(error) = apply_detection_snapshot(runtime, snapshot, false) {
             log::log(log::Level::Warn, &error);
         }
         ui::invalidate("board");
