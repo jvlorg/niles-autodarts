@@ -361,6 +361,13 @@ fn ingest_announcement_json(json: &[u8]) -> autodarts_core::local_score::Journey
         let Some(runtime) = slot.as_mut() else {
             return autodarts_core::local_score::JourneyResult::Suppressed;
         };
+        let before = (
+            runtime.announcement_session.diagnostics(),
+            runtime.policy_event,
+            runtime.speech_generation,
+            runtime.speech_in_flight,
+            runtime.speech_queue.len(),
+        );
         if runtime.speech_reopen_pending {
             reopen_speech(runtime);
         }
@@ -389,6 +396,16 @@ fn ingest_announcement_json(json: &[u8]) -> autodarts_core::local_score::Journey
             }
             collect_speech(runtime);
             reconcile_deadline_timer(runtime);
+        }
+        let after = (
+            runtime.announcement_session.diagnostics(),
+            runtime.policy_event,
+            runtime.speech_generation,
+            runtime.speech_in_flight,
+            runtime.speech_queue.len(),
+        );
+        if before != after {
+            ui::invalidate("board");
         }
         result
     })
@@ -652,6 +669,7 @@ fn on_deadline_timer(runtime: &mut Runtime, id: &str) {
         collect_speech(runtime);
         reconcile_deadline_timer(runtime);
     }
+    ui::invalidate("board");
 }
 fn speech_status_line(runtime: &Runtime) -> String {
     let mut parts = vec![if !runtime.speech_enabled {
@@ -1077,6 +1095,7 @@ impl Guest for Plugin {
             });
             if current {
                 poll_speech();
+                ui::invalidate("board");
             }
         }
     }
@@ -1241,6 +1260,7 @@ impl Guest for Plugin {
                         Some(format!("Board event stream overflow ({count})"));
                 }
             }
+            ui::invalidate("board");
         });
     }
     fn authorize_url(_: String, _: String) -> Result<String, String> {

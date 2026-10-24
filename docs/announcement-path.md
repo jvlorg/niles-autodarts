@@ -24,6 +24,8 @@ A dedicated one-second speech-progress timer retries status collection while one
 
 Stale callbacks cannot consume the current timer registration, and generation identity survives component stop/restart. Queue overflow and either timer-registration failure invalidate pending/queued speech and core eligibility. Diagnostics distinguish queued intents from host-pending requests. Invalidating ingress is processed before collecting terminal outcomes, so an already-completed request cannot cause one last stale queued submission.
 
+Niles caches rendered surfaces. Event-state changes and current deadline/progress callbacks invalidate the board surface so diagnostics do not wait for the slower HTTP poll; identical event state does not request a redraw. The pinned scheduler expires utterances held before transport for three seconds, so ordering preserves terminal correlation, not a guarantee that arbitrarily slow preparation will deliver.
+
 Ordinary clear and takeout do not close the speech stream or discard the FIFO. Observed stopped/disconnected WebSocket or HTTP state, acknowledged detection-stop control, disablement, settings changes, parse errors, overflow, and reconnect close pending host work, discard queued stale intents, advance the speech generation, and require a fresh baseline. An acknowledged stop cancels commentary even if its independent state reread still reports running; failed commands alone do not establish stop. The pinned close contract cannot promise reversal of external transport already started; no stronger audible-stop claim is made.
 
 `Ok(())` at the core adapter means adapter acceptance. Host submission, terminal transport result, and human audibility are separate observations.
