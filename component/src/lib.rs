@@ -842,7 +842,8 @@ impl autodarts_core::AnnouncementDelivery for SpeechDelivery<'_> {
         request: &autodarts_core::AnnouncementRequest,
     ) -> Result<(), autodarts_core::DeliveryError> {
         if self.session.is_none() {
-            *self.submission_error = Some("Speech stream unavailable".into());
+            self.submission_error
+                .get_or_insert_with(|| "Speech stream unavailable".into());
             return Err(autodarts_core::DeliveryError::Unavailable);
         }
         if self.pending.len() + self.queue.len() >= MAX_PENDING_SPEECH {
@@ -1076,15 +1077,15 @@ fn observation_connection_text(runtime: &Runtime) -> String {
         return "closed".into();
     }
     let status = runtime.websocket_status.as_deref().unwrap_or_default();
-    if status.contains("connected") {
+    if status == "Board event stream connected" {
         "connected".into()
-    } else if status.contains("connecting") {
+    } else if status == "Board event stream connecting" {
         "connecting".into()
-    } else if status.contains("reconnecting") {
+    } else if status.starts_with("Board event stream reconnecting:") {
         "reconnecting".into()
-    } else if status.contains("failed") {
+    } else if status.starts_with("Board event stream failed:") {
         "failed".into()
-    } else if status.contains("unavailable") {
+    } else if status.starts_with("Board event stream unavailable:") {
         "unavailable".into()
     } else {
         "open".into()

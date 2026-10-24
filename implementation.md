@@ -42,7 +42,15 @@ No live device write, installation, release publication, LLM call, or live voice
 - `bash scripts/verify.sh --quick` — passed.
 - `cargo fmt --all` — completed.
 
-The final maintained `bash scripts/verify.sh` passed on the committed candidate after the host-proof lifecycle update. It prepared Niles `4f3c0a10b2accd022354a23b9f961b222c27eb56`, compared the exact WIT, passed package checks, exact-asset diagnostics, the loopback compiled host proof on port 3180, checksums, and actionlint. Full exact-head output is preserved in `.harness/artifacts/verify-full-exact-head.log`; exit status is `.harness/artifacts/verify-full-exact-head.exit`.
+The pre-review candidate's maintained `bash scripts/verify.sh` passed after the host-proof lifecycle update. It prepared Niles `4f3c0a10b2accd022354a23b9f961b222c27eb56`, compared the exact WIT, passed package checks, exact-asset diagnostics, the loopback compiled host proof on port 3180, checksums, and actionlint. Full exact-head output is preserved in `.harness/artifacts/verify-full-exact-head.log`; exit status is `.harness/artifacts/verify-full-exact-head.exit`. This evidence predates the review corrections below and does not verify their changed Wasm.
+
+### JVL-16 review corrections
+
+- Fixed observation-connection classification: `reconnecting` previously matched `connecting`, and disconnect reason text containing `connected` could claim a connected observation stream.
+- Preserved the host-open error when commentary is rejected without a speech session, rather than overwriting permission failures with generic unavailability.
+- Both diagnostic regressions failed before the fixes. Added focused coverage for the rendered state dimensions, stop during asynchronous-close retry, current-running observations with disabled/invalid/host-denied settings, and idle HTTP stop on ordinary and accelerated readback. Existing tests now assert timer cancellation, failed-startup session closure, and safe recovery into the newly configured room.
+- `cargo test --manifest-path component/Cargo.toml --lib` passed with 63 tests; `bash scripts/verify.sh --quick` passed. Logs are `.harness/artifacts/astra-regression-before.log`, `astra-regression-after.log`, and `astra-verify-quick.log`, with separate exit-status files. An earlier quick invocation was interrupted by the tool timeout and is not passing evidence.
+- The workflow's final candidate stage must run the maintained full chain, including pinned-host lifecycle proof, against the new PR head. No installed UI, live-board, or audible acceptance was performed by this review.
 
 ### Remaining limitations
 
