@@ -381,7 +381,7 @@ fn websocket_callback_drives_each_dart_and_total_after_clean_baseline() {
     );
 }
 #[test]
-fn reduced_capture_uses_actual_callback_and_keeps_following_rounds_eligible() {
+fn supplied_capture_uses_actual_callback_before_separate_successive_rounds() {
     let capture: serde_json::Value = serde_json::from_slice(include_bytes!(
         "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-reduced-capture.json"
     ))
@@ -391,67 +391,67 @@ fn reduced_capture_uses_actual_callback_and_keeps_following_rounds_eligible() {
     ))
     .unwrap();
     for mode in ["each_dart_then_total", "total_only"] {
-        for include_inactive_tail in [false, true] {
-            setup(initial(false));
-            enable_announcements(mode);
-            Plugin::init().unwrap();
-            websocket::status(
-                41,
-                bindings::niles::integration::websocket::ConnectionStatus::Connected,
-            );
-            let envelopes = capture.as_array().unwrap();
-            let prefix = if include_inactive_tail {
-                envelopes.as_slice()
-            } else {
-                &envelopes[..7]
-            };
-            for (index, envelope) in prefix.iter().enumerate() {
-                send_event(&serde_json::to_string(envelope).unwrap());
-                assert!(speech_stream::calls().submitted.is_empty());
-                if index == 5 || index == 6 {
-                    let lines = render_text();
-                    assert!(
-                        lines
-                            .iter()
-                            .any(|line| line.contains("Policy readiness: collecting (0 darts)"))
-                    );
-                    assert!(!lines.iter().any(|line| line.contains("baseline required")));
-                }
-            }
-            let mut expected = Vec::new();
-            let mut darts = 0;
-            for envelope in continuation.as_array().unwrap() {
-                send_event(&serde_json::to_string(envelope).unwrap());
-                let data = &envelope["data"];
-                if envelope["type"] == "state" {
-                    if let Some(count) = data["numThrows"].as_u64().filter(|count| *count > 0) {
-                        darts = count;
-                        if mode == "each_dart_then_total" {
-                            expected.push(if count == 1 { "3" } else { "7" });
-                        }
-                    }
-                } else if darts > 0 {
-                    expected.push("17");
-                    darts = 0;
-                }
-                assert_eq!(
-                    speech_stream::calls()
-                        .submitted
+        setup(initial(false));
+        enable_announcements(mode);
+        Plugin::init().unwrap();
+        websocket::status(
+            41,
+            bindings::niles::integration::websocket::ConnectionStatus::Connected,
+        );
+        for (index, envelope) in capture.as_array().unwrap().iter().enumerate() {
+            send_event(&serde_json::to_string(envelope).unwrap());
+            assert!(speech_stream::calls().submitted.is_empty());
+            if index == 11 {
+                let lines = render_text();
+                assert!(
+                    lines
                         .iter()
-                        .map(|(_, text)| text.as_str())
-                        .collect::<Vec<_>>(),
-                    expected
+                        .any(|line| line == "Policy readiness: collecting (0 darts)")
+                );
+                assert!(
+                    lines
+                        .iter()
+                        .any(|line| line == "Last policy event: Processed (BaselineEstablished)")
                 );
             }
+        }
+        let lines = render_text();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "Policy readiness: collecting (0 darts)")
+        );
+        assert!(!lines.iter().any(|line| line.contains("baseline required")));
+
+        let expected = if mode == "each_dart_then_total" {
+            [
+                "3", "7", "7", "17", "3", "7", "7", "17", "3", "7", "7", "17",
+            ]
+            .as_slice()
+        } else {
+            ["17", "17", "17"].as_slice()
+        };
+        let mut submitted = 0;
+        for (index, envelope) in continuation.as_array().unwrap().iter().enumerate() {
+            let emits = if mode == "total_only" {
+                matches!(index, 3 | 11 | 15)
+            } else {
+                matches!(index, 0..=3 | 7..=9 | 11..=15)
+            };
+            send_event(&serde_json::to_string(envelope).unwrap());
+            if emits {
+                submitted += 1;
+            }
             assert_eq!(
-                expected.len(),
-                if mode == "each_dart_then_total" {
-                    12
-                } else {
-                    3
-                }
+                speech_stream::calls()
+                    .submitted
+                    .iter()
+                    .map(|(_, text)| text.as_str())
+                    .collect::<Vec<_>>(),
+                &expected[..submitted]
             );
         }
+        assert_eq!(submitted, expected.len());
     }
 }
 

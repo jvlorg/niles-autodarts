@@ -81,19 +81,29 @@ fn replay_capture_with_synthetic_continuation(mode: AnnouncementMode) -> Recordi
     let capture: serde_json::Value = serde_json::from_slice(include_bytes!(
         "../tests/fixtures/board-manager-1.0.7-reduced-capture.json"
     ))
-    .expect("valid reduced capture");
-    for envelope in capture.as_array().expect("capture array") {
+    .expect("valid reduced real capture");
+    for (index, envelope) in capture
+        .as_array()
+        .expect("capture array")
+        .iter()
+        .enumerate()
+    {
         let json = serde_json::to_vec(envelope).expect("capture envelope");
-        run(
+        let result = run(
             &mut session,
             &mut delivery,
             std::str::from_utf8(&json).expect("capture JSON"),
         );
+        assert!(delivery.requests.is_empty());
+        if index == 11 {
+            assert_eq!(result, JourneyResult::Baseline);
+            assert_eq!(
+                session.diagnostics().readiness,
+                autodarts_core::AnnouncementReadiness::Collecting { dart_count: 0 }
+            );
+        }
     }
-    assert!(delivery.requests.is_empty());
-    println!(
-        "{mode_name}: reconstructed prefix produced no policy submissions (original capture unavailable)"
-    );
+    println!("{mode_name}: reduced real capture stayed silent and established the empty baseline");
 
     let continuation: serde_json::Value = serde_json::from_slice(include_bytes!(
         "../tests/fixtures/board-manager-1.0.7-synthetic-continuation.json"
@@ -116,7 +126,7 @@ fn replay_capture_with_synthetic_continuation(mode: AnnouncementMode) -> Recordi
 
 fn main() {
     println!(
-        "Synthetic source-derived replay (not captures): settings → JSON → session → recording"
+        "Offline reduced real-capture replay plus synthetic continuation: settings → JSON → session → recording"
     );
     let each = replay_mode(AnnouncementMode::EachDartThenTotal);
     assert_eq!(each.requests.len(), 12);

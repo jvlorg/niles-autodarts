@@ -193,35 +193,150 @@ mod tests {
         );
     }
     #[test]
-    fn captured_prefix_stays_silent_and_continuation_announces_three_rounds() {
-        let mut session =
-            AnnouncementSession::new(settings(true, "each_dart_then_total", "living_room"));
-        let mut delivery = RecordingDelivery::default();
+    fn supplied_capture_stays_silent_then_continuation_announces_three_rounds() {
         let capture: serde_json::Value = serde_json::from_slice(include_bytes!(
             "../tests/fixtures/board-manager-1.0.7-reduced-capture.json"
         ))
         .unwrap();
-        for envelope in capture.as_array().unwrap() {
-            session.ingest_json(&serde_json::to_vec(envelope).unwrap(), &mut delivery);
-        }
-        assert!(delivery.requests.is_empty());
+        let envelopes = capture.as_array().unwrap();
+        assert_eq!(envelopes.len(), 14);
+        assert_eq!(
+            envelopes
+                .iter()
+                .map(|envelope| envelope["type"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "motion_state",
+                "state",
+                "motion_state",
+                "state",
+                "motion_state",
+                "state",
+                "motion_state",
+                "state",
+                "motion_state",
+                "motion_state",
+                "motion_state",
+                "state",
+                "motion_state",
+                "motion_state",
+            ]
+        );
+        assert_eq!(
+            envelopes[1]["data"]["throws"][0]["segment"],
+            serde_json::json!({
+                "name": "S3",
+                "number": 3,
+                "bed": "SingleOuter",
+                "multiplier": 1
+            })
+        );
+        assert_eq!(
+            envelopes[5]["data"]["throws"],
+            serde_json::json!([
+                {
+                    "segment": {
+                        "name": "S3",
+                        "number": 3,
+                        "bed": "SingleOuter",
+                        "multiplier": 1
+                    }
+                },
+                {
+                    "segment": {
+                        "name": "S7",
+                        "number": 7,
+                        "bed": "SingleOuter",
+                        "multiplier": 1
+                    }
+                },
+                {
+                    "segment": {
+                        "name": "S7",
+                        "number": 7,
+                        "bed": "SingleOuter",
+                        "multiplier": 1
+                    }
+                }
+            ])
+        );
+        assert_eq!(
+            envelopes[11]["data"],
+            serde_json::json!({
+                "connected": true,
+                "running": true,
+                "status": "Throw",
+                "event": "Takeout finished",
+                "numThrows": 0
+            })
+        );
+        assert!(
+            !envelopes[11]["data"]
+                .as_object()
+                .unwrap()
+                .contains_key("throws")
+        );
+        assert_eq!(
+            envelopes[12]["data"],
+            serde_json::json!({
+                "isTakeoutPartial": true,
+                "isTakeoutFull": true
+            })
+        );
+        assert_eq!(
+            envelopes[13]["data"],
+            serde_json::json!({
+                "isTakeoutPartial": false,
+                "isTakeoutFull": false
+            })
+        );
 
         let continuation: serde_json::Value = serde_json::from_slice(include_bytes!(
             "../tests/fixtures/board-manager-1.0.7-synthetic-continuation.json"
         ))
         .unwrap();
-        for envelope in continuation.as_array().unwrap() {
-            session.ingest_json(&serde_json::to_vec(envelope).unwrap(), &mut delivery);
+        for (mode, expected) in [
+            (
+                AnnouncementMode::EachDartThenTotal,
+                [
+                    "3", "7", "7", "17", "3", "7", "7", "17", "3", "7", "7", "17",
+                ]
+                .as_slice(),
+            ),
+            (AnnouncementMode::TotalOnly, ["17", "17", "17"].as_slice()),
+        ] {
+            let mode_name = match mode {
+                AnnouncementMode::EachDartThenTotal => "each_dart_then_total",
+                AnnouncementMode::TotalOnly => "total_only",
+            };
+            let mut session = AnnouncementSession::new(settings(true, mode_name, "living_room"));
+            let mut delivery = RecordingDelivery::default();
+            for (index, envelope) in envelopes.iter().enumerate() {
+                session.ingest_json(&serde_json::to_vec(envelope).unwrap(), &mut delivery);
+                assert!(delivery.requests.is_empty());
+                if index == 11 {
+                    assert_eq!(
+                        session.diagnostics().readiness,
+                        AnnouncementReadiness::Collecting { dart_count: 0 }
+                    );
+                }
+            }
+            assert_eq!(
+                session.diagnostics().readiness,
+                AnnouncementReadiness::Collecting { dart_count: 0 }
+            );
+
+            for envelope in continuation.as_array().unwrap() {
+                session.ingest_json(&serde_json::to_vec(envelope).unwrap(), &mut delivery);
+            }
+            assert_eq!(
+                delivery
+                    .requests
+                    .iter()
+                    .map(|request| request.text.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
         }
-        assert_eq!(
-            delivery
-                .requests
-                .iter()
-                .map(|request| request.text.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "3", "7", "7", "17", "3", "7", "7", "17", "3", "7", "7", "17"
-            ]
-        );
     }
 }

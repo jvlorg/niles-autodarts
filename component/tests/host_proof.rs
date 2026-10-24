@@ -419,9 +419,12 @@ impl Drop for Board {
     }
 }
 
-async fn send(socket: &mut Socket, frames: &[&str]) {
+async fn send<T: AsRef<str>>(socket: &mut Socket, frames: &[T]) {
     for frame in frames {
-        socket.send(Message::Text((*frame).into())).await.unwrap();
+        socket
+            .send(Message::Text(frame.as_ref().to_owned().into()))
+            .await
+            .unwrap();
     }
 }
 
@@ -541,7 +544,7 @@ impl Proof {
     }
 }
 
-fn fixture_frames(capture: bool) -> Vec<&'static str> {
+fn fixture_frames(capture: bool) -> Vec<String> {
     let source = if capture {
         include_str!(
             "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-reduced-capture.json"
@@ -551,33 +554,33 @@ fn fixture_frames(capture: bool) -> Vec<&'static str> {
             "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-synthetic-continuation.json"
         )
     };
-    source
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            line.strip_prefix('{').map(|_| line.trim_end_matches(','))
-        })
+    let envelopes: Vec<serde_json::Value> =
+        serde_json::from_str(source).expect("fixture must be a JSON array");
+    envelopes
+        .into_iter()
+        .map(|envelope| serde_json::to_string(&envelope).expect("fixture envelope"))
         .collect()
 }
 
 async fn captured_replay(mode: &str, expected: &[&str], label: &str) {
     let (proof, mut socket) = Proof::start(mode).await;
     let capture = fixture_frames(true);
-    send(&mut socket, &capture).await;
-
-    // Sending frames only acknowledges the socket write, not guest processing.
-    // Observe the post-clear policy state before claiming prefix silence.
+    send(&mut socket, &capture[..12]).await;
+    proof
+        .policy_event("Policy readiness: collecting (0 darts)", "BaselineEstablished")
+        .await;
+    assert!(proof.host.trace.lock().requests.is_empty());
+    assert!(proof.output.prepared.lock().is_empty());
+    send(&mut socket, &capture[12..]).await;
     proof
         .policy_event("Policy readiness: collecting (0 darts)", "InactiveMotion")
         .await;
     assert!(proof.host.trace.lock().requests.is_empty());
     assert!(proof.output.prepared.lock().is_empty());
+
     let continuation = fixture_frames(false);
     let mut submitted = 0;
     for (index, frame) in continuation.iter().enumerate() {
-        // Expected boundaries of the separately labelled synthetic fixture.
-        // Serialize recording-output proof at real terminal acknowledgements;
-        // the burst scenario above separately verifies host replacement.
         let emits = if mode == "total_only" {
             matches!(index, 3 | 11 | 15)
         } else {
@@ -586,7 +589,7 @@ async fn captured_replay(mode: &str, expected: &[&str], label: &str) {
         if emits {
             proof.output.allow_one();
         }
-        send(&mut socket, &[frame]).await;
+        send(&mut socket, std::slice::from_ref(frame)).await;
         if emits {
             submitted += 1;
             proof.host.terminals(submitted).await;
@@ -805,13 +808,13 @@ async fn compiled_component_uses_real_niles_speech_scheduler() {
         &[
             "3", "7", "7", "17", "3", "7", "7", "17", "3", "7", "7", "17",
         ],
-        "reconstructed-prefix/each-dart-then-total",
+        "reduced-real-capture/synthetic-continuation/each-dart-then-total",
     )
     .await;
     captured_replay(
         "total_only",
         &["17", "17", "17"],
-        "reconstructed-prefix/total-only",
+        "reduced-real-capture/synthetic-continuation/total-only",
     )
     .await;
 }
