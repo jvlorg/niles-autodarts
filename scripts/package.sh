@@ -3,7 +3,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
-version="0.1.0-alpha.1"
+version="0.1.0-alpha.2"
 toolchain="${RUST_TOOLCHAIN:-1.99.0}"
 tag=""
 output=""
@@ -20,7 +20,7 @@ while [[ $# -gt 0 ]]; do
     *) usage; exit 2 ;;
   esac
 done
-if [[ "${tag#v}" != "$version" || -z "$output" ]]; then
+if [[ "$tag" != "v$version" || -z "$output" ]]; then
   usage
   exit 2
 fi

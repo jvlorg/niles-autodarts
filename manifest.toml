@@ -1,6 +1,6 @@
 [package]
 name = "autodarts"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 description = "Autodarts Board Manager status and detection controls with room-bound local speech commentary; Niles selects satellites."
 
 [[settings]]

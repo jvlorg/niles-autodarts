@@ -419,9 +419,12 @@ impl Drop for Board {
     }
 }
 
-async fn send(socket: &mut Socket, frames: &[&str]) {
+async fn send<T: AsRef<str>>(socket: &mut Socket, frames: &[T]) {
     for frame in frames {
-        socket.send(Message::Text((*frame).into())).await.unwrap();
+        socket
+            .send(Message::Text(frame.as_ref().to_owned().into()))
+            .await
+            .unwrap();
     }
 }
 
@@ -489,6 +492,25 @@ impl Proof {
         )
     }
 
+    async fn policy_event(&self, readiness: &str, reason: &str) {
+        tokio::time::timeout(WAIT, async {
+            loop {
+                let surface = self
+                    .runtime
+                    .render("autodarts", "board", Context::default())
+                    .await
+                    .unwrap();
+                let rendered = format!("{surface:?}");
+                if rendered.contains(readiness) && rendered.contains(reason) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("guest processes the expected policy boundary");
+    }
+
     async fn finish(self, label: &str, forwarded: usize) {
         tokio::time::timeout(WAIT, async {
             loop {
@@ -520,6 +542,77 @@ impl Proof {
         let mut board = self.board;
         let _ = (&mut board.task).await;
     }
+}
+
+fn fixture_frames(capture: bool) -> Vec<String> {
+    let source = if capture {
+        include_str!(
+            "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-reduced-capture.json"
+        )
+    } else {
+        include_str!(
+            "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-synthetic-continuation.json"
+        )
+    };
+    let envelopes: Vec<serde_json::Value> =
+        serde_json::from_str(source).expect("fixture must be a JSON array");
+    envelopes
+        .into_iter()
+        .map(|envelope| serde_json::to_string(&envelope).expect("fixture envelope"))
+        .collect()
+}
+
+async fn captured_replay(mode: &str, expected: &[&str], label: &str) {
+    let (proof, mut socket) = Proof::start(mode).await;
+    let capture = fixture_frames(true);
+    send(&mut socket, &capture[..12]).await;
+    proof
+        .policy_event(
+            "Policy readiness: collecting (0 darts)",
+            "BaselineEstablished",
+        )
+        .await;
+    assert!(proof.host.trace.lock().requests.is_empty());
+    assert!(proof.output.prepared.lock().is_empty());
+    send(&mut socket, &capture[12..]).await;
+    proof
+        .policy_event("Policy readiness: collecting (0 darts)", "InactiveMotion")
+        .await;
+    assert!(proof.host.trace.lock().requests.is_empty());
+    assert!(proof.output.prepared.lock().is_empty());
+
+    let continuation = fixture_frames(false);
+    let mut submitted = 0;
+    for (index, frame) in continuation.iter().enumerate() {
+        let emits = if mode == "total_only" {
+            matches!(index, 3 | 11 | 15)
+        } else {
+            matches!(index, 0..=3 | 7..=9 | 11..=15)
+        };
+        if emits {
+            proof.output.allow_one();
+        }
+        send(&mut socket, std::slice::from_ref(frame)).await;
+        if emits {
+            submitted += 1;
+            proof.host.terminals(submitted).await;
+        }
+    }
+    assert_eq!(submitted, expected.len());
+    proof
+        .policy_event(
+            "Policy readiness: collecting (0 darts)",
+            "BaselineEstablished",
+        )
+        .await;
+    let expected_requests: Vec<_> = expected
+        .iter()
+        .map(|text| (*text, SpeechOutcome::Delivered))
+        .collect();
+    proof.host.assert_requests(&expected_requests);
+    proof.output.assert_delivered("living_room", expected);
+    proof.finish(label, expected.len()).await;
+    drop(socket);
 }
 
 async fn ordered_and_repeated_removal() {
@@ -713,4 +806,18 @@ async fn compiled_component_uses_real_niles_speech_scheduler() {
     burst_replacement().await;
     total_only().await;
     close_reconnect_and_room_switch().await;
+    captured_replay(
+        "each_dart_then_total",
+        &[
+            "3", "7", "7", "17", "3", "7", "7", "17", "3", "7", "7", "17",
+        ],
+        "reduced-real-capture/synthetic-continuation/each-dart-then-total",
+    )
+    .await;
+    captured_replay(
+        "total_only",
+        &["17", "17", "17"],
+        "reduced-real-capture/synthetic-continuation/total-only",
+    )
+    .await;
 }

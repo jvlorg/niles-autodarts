@@ -40,8 +40,8 @@ jobs:
         run: |
           set -euo pipefail
           tag="$EVENT_TAG"
-          [[ "$tag" == "v0.1.0-alpha.1" ]] || {
-            echo "unsupported candidate tag: $tag (expected v0.1.0-alpha.1)" >&2
+          [[ "$tag" == "v0.1.0-alpha.2" ]] || {
+            echo "unsupported candidate tag: $tag (expected v0.1.0-alpha.2)" >&2
             exit 2
           }
           publish=false
@@ -101,7 +101,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: alpha-${{ needs.resolve.outputs.tag }}
-          path: dist/v0.1.0-alpha.1/
+          path: dist/v0.1.0-alpha.2/
           if-no-files-found: error
       - name: Upload verification evidence
         if: always()

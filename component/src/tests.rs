@@ -262,11 +262,6 @@ fn announcement_settings_room_speech_lifecycle_and_synthetic_delivery() {
     }));
     http::set_replies(initial(false));
     Plugin::on_timer("poll".into());
-    let pending_lines = render_text();
-    assert!(
-        pending_lines.iter().any(|line| line == "Speech pending: 1"),
-        "{pending_lines:?}"
-    );
 
     speech_stream::set_statuses(vec![
         bindings::niles::integration::speech_stream::RequestStatus {
@@ -278,6 +273,7 @@ fn announcement_settings_room_speech_lifecycle_and_synthetic_delivery() {
     Plugin::on_timer("poll".into());
     let lines = render_text();
     assert!(lines.iter().any(|line| line.contains("Replaced")));
+    assert!(lines.iter().any(|line| line.contains("Speech stream open")));
     assert!(
         lines
             .iter()
@@ -299,6 +295,13 @@ fn announcement_settings_room_speech_lifecycle_and_synthetic_delivery() {
             .iter()
             .any(|line| line == "Announcement room: office")
     );
+    let lines = render_text();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("Speech stream disabled"))
+    );
+    assert!(lines.iter().any(|line| line.contains("Replaced")));
     Plugin::stop();
 }
 
@@ -376,6 +379,80 @@ fn websocket_callback_drives_each_dart_and_total_after_clean_baseline() {
         speech_stream::calls().submitted,
         [(7, "20".into()), (7, "5".into()), (7, "25".into())]
     );
+}
+#[test]
+fn supplied_capture_uses_actual_callback_before_separate_successive_rounds() {
+    let capture: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-reduced-capture.json"
+    ))
+    .unwrap();
+    let continuation: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-synthetic-continuation.json"
+    ))
+    .unwrap();
+    for mode in ["each_dart_then_total", "total_only"] {
+        setup(initial(false));
+        enable_announcements(mode);
+        Plugin::init().unwrap();
+        websocket::status(
+            41,
+            bindings::niles::integration::websocket::ConnectionStatus::Connected,
+        );
+        for (index, envelope) in capture.as_array().unwrap().iter().enumerate() {
+            send_event(&serde_json::to_string(envelope).unwrap());
+            assert!(speech_stream::calls().submitted.is_empty());
+            if index == 11 {
+                let lines = render_text();
+                assert!(
+                    lines
+                        .iter()
+                        .any(|line| line == "Policy readiness: collecting (0 darts)")
+                );
+                assert!(
+                    lines
+                        .iter()
+                        .any(|line| line == "Last policy event: Processed (BaselineEstablished)")
+                );
+            }
+        }
+        let lines = render_text();
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "Policy readiness: collecting (0 darts)")
+        );
+        assert!(!lines.iter().any(|line| line.contains("baseline required")));
+
+        let expected = if mode == "each_dart_then_total" {
+            [
+                "3", "7", "7", "17", "3", "7", "7", "17", "3", "7", "7", "17",
+            ]
+            .as_slice()
+        } else {
+            ["17", "17", "17"].as_slice()
+        };
+        let mut submitted = 0;
+        for (index, envelope) in continuation.as_array().unwrap().iter().enumerate() {
+            let emits = if mode == "total_only" {
+                matches!(index, 3 | 11 | 15)
+            } else {
+                matches!(index, 0..=3 | 7..=9 | 11..=15)
+            };
+            send_event(&serde_json::to_string(envelope).unwrap());
+            if emits {
+                submitted += 1;
+            }
+            assert_eq!(
+                speech_stream::calls()
+                    .submitted
+                    .iter()
+                    .map(|(_, text)| text.as_str())
+                    .collect::<Vec<_>>(),
+                &expected[..submitted]
+            );
+        }
+        assert_eq!(submitted, expected.len());
+    }
 }
 
 #[test]
@@ -479,6 +556,27 @@ fn malformed_websocket_frames_invalidate_without_false_speech() {
         bindings::niles::integration::websocket::Message::Text(REMOVED.into()),
     );
     assert!(speech_stream::calls().submitted.is_empty());
+}
+#[test]
+fn invalid_callback_keeps_reason_while_resetting_readiness() {
+    setup(initial(false));
+    enable_announcements("total_only");
+    Plugin::init().unwrap();
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text("{bad".into()),
+    );
+    let rendered = render_text();
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line == "Policy readiness: awaiting baseline")
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line.contains("Last policy event: Invalid (InvalidInput)"))
+    );
 }
 
 #[test]
@@ -695,6 +793,29 @@ fn send_event(json: &str) {
         41,
         bindings::niles::integration::websocket::Message::Text(json.into()),
     );
+}
+
+#[test]
+fn stopped_board_discards_pending_speech_and_requires_new_baseline() {
+    setup(initial(false));
+    enable_announcements("each_dart_then_total");
+    Plugin::init().unwrap();
+    send_event(EMPTY_EVENT);
+    send_event(ONE_DART);
+    let session = speech_stream::calls().submitted[0].0;
+    send_event(r#"{"type":"state","data":{"running":false,"numThrows":0}}"#);
+    assert!(speech_stream::calls().closed.contains(&session));
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("DiscardedOnReset"))
+    );
+    send_event(REMOVED);
+    send_event(ONE_DART);
+    assert_eq!(speech_stream::calls().submitted.len(), 1);
+    send_event(EMPTY_EVENT);
+    send_event(ONE_DART);
+    assert_eq!(speech_stream::calls().submitted.len(), 2);
 }
 
 #[test]

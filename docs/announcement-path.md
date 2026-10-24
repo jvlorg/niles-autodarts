@@ -2,6 +2,18 @@
 
 Status: the checked-in component has a room-bound Niles speech-stream path and explicit host-outcome bookkeeping. It is an implementation candidate, not an installed or audible proof. Niles retains household and speech authority.
 
+## JVL-13 supplied reduced real capture and alpha.2 offline evidence
+
+`board-manager-1.0.7-reduced-capture.json` is the supplied reduced real capture: a 14-envelope ordered projection of the Board Manager messages, with coordinate/camera/timing data removed and consecutive identical motion flags coalesced. It is not a reconstructed baseline or a synthetic continuation. The capture begins with the nonempty 3/7/7 collection and contains the real zero-count `Takeout finished` state with omitted `throws`; no empty state was added. The initial nonempty collection remains silent, and that captured zero-count event establishes the safe baseline.
+
+`numThrows: 0` with omitted `throws` is normalized to the canonical empty state. Explicit empty arrays remain valid; missing/nonzero arrays, nulls, contradictory counts, malformed darts, and out-of-range values remain fail-closed. Typed diagnostics expose policy readiness separately from the last ignored, suppressed, invalid, or processed event. `board-manager-1.0.7-synthetic-continuation.json` remains separate and exercises three later identical 3/7/7 collections in both modes; it yields `3,7,7,17` per collection in Each dart → Total and `17` per collection in Total only.
+
+Core replay, fake-WIT component ingress, and compiled pinned-host proof now consume the exact reduced real capture before the separate synthetic continuation. The real-capture phase asserts no initial nonempty replay, baseline recovery at the omitted-array event, and no speech submissions before continuation. This remains offline policy/submission evidence: it does not establish installation, live event ordering or miss encoding, household routing, host compatibility, or audible playback.
+
+The current local candidate is `v0.1.0-alpha.2`. Historical verification results, suite counts, package hashes, and their exact source commits are recorded below. Final-head acceptance evidence belongs to the exact pushed commit and is recorded in [PR #9](https://github.com/jvlorg/niles-autodarts/pull/9) and the final report after verification. The compiled proof requires free loopback port 3180 and uses the pinned host; no live device writes, installation, deployment, release publication, or audible acceptance occurs here.
+
+Existing synthetic regressions continue to cover duplicate/progressive shrink, ambiguous scoring, stopped-board pending speech, failed submission, reconnect and reconfiguration safety. Those edge cases remain in synthetic coverage and are not mixed into the supplied real capture.
+
 ## Current path
 
 The component opens Board Manager `/api/events` when announcement intent is enabled. `speech_stream_enabled` separately gates a room-bound stream for the configured room. `AnnouncementSession` parses bounded text frames and emits numeric request intent. The component submits text to Niles, records host request IDs, polls status, and closes the stream on stop or reset. HTTP `/api/state` remains status/baseline-only.
@@ -20,31 +32,25 @@ The exact unchanged candidate only permits WebSocket ports 80/3180/443, so compi
 
 Synthetic eligibility and recording output do not establish installed-host compatibility, live event ordering/miss encoding, household routing or human audibility. No host-private Rust function is used as an add-on API. No live device writes, persistent installation, deployment or release publication occur in these fixtures.
 
-## Deep-review verification
+## JVL-13 verification record
 
-- Before the source fix, three new callback regressions failed: overflow recovery without reconnect, pending-speech invalidation on untrusted frames, and collection of completed results before the slow timer. All pass after the fixes.
-- `bash scripts/verify.sh --quick`: passed formatting, workspace build, strict Clippy, 25 core tests, 23 component tests, release Wasm build, both-mode replay, 8 probe tests and guidance equality.
-- `bash scripts/prepare-host.sh`: verified host `4f3c0a10b2accd022354a23b9f961b222c27eb56` and built its CLI in the shared target directory.
-- `cargo +1.99.0 clippy --locked --manifest-path component/host-proof/Cargo.toml --all-targets -- -D warnings`: passed after disabling the accidental `ort` defaults.
-- `NILES_COMPONENT_WASM="$PWD/verification/review-smoke/integration.wasm" cargo +1.99.0 test --locked --manifest-path component/host-proof/Cargo.toml -- --nocapture`: passed the compiled synthetic scenarios and separately labeled manager scenario. These initial smoke assets came from the working build, not a clean release candidate.
-- `python3 scripts/verify-host.py /home/harness/projects/.cargo-target/niles-autodarts/debug/niles --package-dir verification/review-smoke`: exact-file checker and synthetic HTTP/render diagnostic passed. Diagnostic state is temporary; existing developer settings/state are refused rather than reused.
-- `python3 scripts/test_release.py`: 8 offline packaging safety regressions passed. Their fake compiler/checker do not establish real host behavior. Separate real pinned checker runs rejected corrupted Wasm and malformed declared SVG fixtures.
-- `bash -n` on each changed shell script and actionlint 1.7.7 on the workflow passed. A throwaway harness executed the workflow's actual tag, artifact-integrity, moved-tag and approval-flag guards: valid assets accepted; invalid tags, missing/duplicate checksums, corrupted assets, wrong source/host, extra files and moved tags rejected; manual `publish=false` remained nonpublishing. No GitHub approval/publication run was performed.
+The supplied reduced real capture is replayed as an ordered 14-envelope array through core JSON ingress, fake-WIT component callbacks, and the compiled pinned-host proof. It stays silent through the initial nonempty 3/7/7 collection; the captured zero-count state with omitted `throws` establishes `Collecting (0 darts)`. The separate synthetic continuation then produces three successive collections: `3,7,7,17` repeated three times in Each dart → Total and `17` repeated three times in Total only. No synthetic baseline is inserted into the real capture.
 
-The recorded compiled burst accepted host IDs `1/2/3/4`, texts `20/5/1/26`, logical keys `epoch:1:collection:2:dart:1`, `:dart:2`, `:dart:3`, `:total:3`. Outcomes were `Replaced/Replaced/Replaced/Delivered`; recorded transport contained only `26`. Ordered input delivered `20/5/1/26`, with a subsequent collection's `20` proving repeated markers did not repeat a total. TotalOnly delivered `26/20` across clear-before-marker and repeated-removal scenarios. Closing during preparation produced actual host `Cancelled`; reconnect and room switch each suppressed nonempty startup collections before delivering a fresh-baseline `20`. The manager-only active-output scenario delivered `20/26` and replaced pending `5`.
+The complete `bash scripts/verify.sh` chain passed on source head `f19753643dd936376a6659ce24b9168ec2f2a60e` and was pushed to PR #9 before the documentation-only evidence update. A later full-chain run was recorded for source head `59c33093751c54256c0badc874ad8c89dd0d42a1` in the PR description. The original verification included:
 
-## Clean-source candidate verification
+- 35 core tests, 26 component tests, 1 compiled pinned-host proof test, 8 maintained probe tests, 9 release-safety tests, and 0 failing doc-tests.
+- Formatting, workspace build, strict workspace Clippy, release Wasm build, maintained replay, pinned host preparation at `4f3c0a10b2accd022354a23b9f961b222c27eb56`, exact WIT comparison, host-proof formatting/strict Clippy, exact package verification, and actionlint.
+- `sha256sum --check SHA256SUMS` passed for the packaged alpha.2 candidate.
 
-Source commit `7b34e16b8049cbdb41943c6ee7fadf718370349e` passed the complete `bash scripts/verify.sh` chain (exit 0) with actionlint 1.7.7 on `PATH` and `CARGO_TARGET_DIR=/home/harness/projects/.cargo-target/niles-autodarts`. The source was tracked-clean; the previous generated candidate was preserved separately rather than overwritten. Packaging built and checked the exact staged Wasm, the HTTP/render diagnostic and compiled scheduler proof consumed that candidate, and `sha256sum --check SHA256SUMS` passed. The compiler was `rustc 1.99.0 (b940084d7 2026-09-28)`; the CLI and runtime used pinned host `4f3c0a10b2accd022354a23b9f961b222c27eb56`.
+The package verified by the `f19753643dd936376a6659ce24b9168ec2f2a60e` run recorded these SHA-256 values:
 
 | Candidate asset | SHA-256 |
 |---|---|
-| `integration.wasm` | `6439a8cf58d04e7ecbb20556171f86356a1cbb985f165b054575b23958d50fe5` |
-| `niles-integration.toml` | `b1c1e4335175e5cfca14ddbd1d21a18c85c16736853f65dc0ff1634f6db550a6` |
-| `provenance.json` | `41992fea86017570031bee0320709d95bede9768799ba3be8e8cb9ea65e83a58` |
+| `integration.wasm` | `f24227e62608da2ad7d41e2587ed96e756dbf564abf1a2630be32989e01b2b06` |
+| `niles-integration.toml` | `8e25ae3fc2377aa54ab1ba13cf93ca8ce98befce26548650e8d48b8ec152e91a` |
+| `provenance.json` | `9bcf94721e7dbe344e3efa4a816df29ac0e2c9aa83f34ae32a7d82bd26cc13ac` |
+| `SHA256SUMS` | `a8c3171a815b126c812faa108a381976fdc9f57c75f1c27e04ff9ca8fdc0a669` |
 
-The provenance records that source commit, not the later evidence-only documentation commit. It records the actual temporary staging path passed to `plugin check`; assets are atomically moved into `dist/v0.1.0-alpha.1` after successful validation without rebuilding.
+Commit `a175d1601051ff5bbd7b7e9162697f03e5066f15` includes the capture-fidelity regression assertion and verification-evidence wording added after those full-chain runs. Scoped formatting, strict Clippy, `cargo test -p autodarts-core`, and documentation diff checks were recorded for that revision; they are not full-chain evidence for a later head. Final acceptance requires the complete maintained chain on the exact pushed commit, with its SHA, counts, and package hashes recorded in PR #9 and the final report. Keeping that final-head record outside the commit avoids creating another unverified head merely to record its own SHA.
 
-Fresh-checkout proof also passed (exit 0): `git clone --no-hardlinks --single-branch <local-repository> /tmp/autodarts-fresh-review-4x7rab2f/source`, then `bash scripts/verify.sh` from that checkout with the same tool paths and shared Cargo build cache. No `.cache/niles`, target directory or candidate was copied. The preparation script fetched the canonical remote at the full pinned SHA and rebuilt the host from that fresh checkout; runtime proof and CLI checking used that same tree. Both manifest and Wasm hashes exactly match the table above. Fresh-run provenance hash was `f7463feb86e7929f722e591f403f9265289558c1e0f523d0018de9213654d213`; it differs because the actual checker staging path differs. The temporary checkout was removed after recording these results.
-
-Release remains blocked on administrator setup: the read-only GitHub environments query returned `total_count: 0`. Configure `alpha-release` with required reviewers before setting `ALPHA_RELEASE_APPROVAL_CONFIGURED=true`. Local guards and successful synthetic checks are not protected-environment approval, installation, household routing or audible evidence. Earlier command transcripts are incomplete; that limits historical command auditing and is not evidence of skipped hooks or migrations.
+This evidence remains offline policy, compiled ingress, and Niles scheduler proof. It does not establish installed-host compatibility, live event ordering or miss encoding, household routing, or audible playback. No live-device writes, installation, deployment, release publication, or audible retest occurred.

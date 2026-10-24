@@ -35,6 +35,54 @@ pub enum JourneyResult {
     DeliveryFailed(DeliveryError),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnnouncementReadiness {
+    Disabled,
+    AwaitingBaseline,
+    Collecting { dart_count: usize },
+    AwaitingRemoval,
+    AwaitingClear,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnnouncementDisposition {
+    Ignored,
+    Suppressed,
+    Invalid,
+    Processed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnnouncementReason {
+    UnrelatedTopic,
+    InactiveMotion,
+    InvalidInput,
+    BaselineEstablished,
+    DartAccepted,
+    TotalAccepted,
+    BaselineRequired,
+    DuplicateState,
+    RemovalCandidate,
+    AwaitingClear,
+    AmbiguousCollection,
+    BoardStopped,
+    NoEligibleCollection,
+    DeliveryFailure,
+    Disabled,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnnouncementEvent {
+    pub disposition: AnnouncementDisposition,
+    pub reason: AnnouncementReason,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnnouncementDiagnostics {
+    pub readiness: AnnouncementReadiness,
+    pub last_event: Option<AnnouncementEvent>,
+}
+
 pub fn parse_json(input: &[u8]) -> Result<LocalEvent, &'static str> {
     if input.len() > MAX_ENVELOPE_BYTES {
         return Err("event envelope too large");
@@ -49,16 +97,22 @@ pub fn parse_state(value: &Value) -> Result<LocalState, &'static str> {
     }
     let running = optional_bool(value, "running")?;
     let num_throws = match value.get("numThrows") {
-        None | Some(Value::Null) => None,
-        Some(Value::Number(n)) => Some(
-            n.as_u64()
+        Some(Value::Number(n)) => {
+            let count = n
+                .as_u64()
                 .and_then(|n| u32::try_from(n).ok())
-                .ok_or("invalid throw count")?,
-        ),
+                .ok_or("invalid throw count")?;
+            if count as usize > MAX_DARTS {
+                return Err("too many darts");
+            }
+            Some(count)
+        }
+        None | Some(Value::Null) => return Err("missing throw count"),
         _ => return Err("invalid throw count"),
     };
     let throws = match value.get("throws") {
-        None | Some(Value::Null) => None,
+        None if num_throws == Some(0) => Some(Vec::new()),
+        None => return Err("missing throws collection"),
         Some(Value::Array(items)) if items.len() <= MAX_DARTS => {
             let mut scores = Vec::with_capacity(items.len());
             for item in items {
@@ -82,10 +136,11 @@ pub fn parse_state(value: &Value) -> Result<LocalState, &'static str> {
             Some(scores)
         }
         Some(Value::Array(_)) => return Err("too many darts"),
-        _ => return Err("invalid throws collection"),
+        Some(Value::Null) => return Err("invalid throws collection"),
+        Some(_) => return Err("invalid throws collection"),
     };
-    if let (Some(count), Some(throws)) = (num_throws, &throws)
-        && usize::try_from(count).ok() != Some(throws.len())
+    if usize::try_from(num_throws.expect("validated throw count")).ok()
+        != Some(throws.as_ref().expect("validated throws collection").len())
     {
         return Err("throw count mismatch");
     }
@@ -112,6 +167,9 @@ pub fn parse_envelope(value: &Value) -> Result<LocalEvent, &'static str> {
         .get("type")
         .and_then(Value::as_str)
         .ok_or("missing event type")?;
+    if !matches!(kind, "state" | "motion_state") {
+        return Ok(LocalEvent::Unknown);
+    }
     let data = value.get("data").ok_or("missing event data")?;
     match kind {
         "state" => parse_state(data).map(LocalEvent::State),
@@ -124,7 +182,7 @@ pub fn parse_envelope(value: &Value) -> Result<LocalEvent, &'static str> {
                 takeout_full: optional_bool(data, "isTakeoutFull")?,
             })
         }
-        _ => Ok(LocalEvent::Unknown),
+        _ => unreachable!("known event type checked above"),
     }
 }
 
@@ -148,6 +206,7 @@ pub struct LocalJourney {
     removal_candidate: Option<Vec<u8>>,
     in_flight: BTreeSet<String>,
     settings: Option<(AnnouncementMode, String)>,
+    last_event: Option<AnnouncementEvent>,
 }
 
 impl LocalJourney {
@@ -165,12 +224,39 @@ impl LocalJourney {
         self.tainted = false;
         self.removal_seen = false;
         self.removal_candidate = None;
+        self.last_event = None;
+    }
+    pub fn diagnostics(&self) -> AnnouncementDiagnostics {
+        let readiness = if self.settings.is_none() {
+            AnnouncementReadiness::Disabled
+        } else {
+            match self.phase {
+                Some(Phase::Collecting) => AnnouncementReadiness::Collecting {
+                    dart_count: self.darts.len(),
+                },
+                Some(Phase::AwaitingClear) if self.removal_candidate.is_some() => {
+                    AnnouncementReadiness::AwaitingRemoval
+                }
+                Some(Phase::AwaitingClear) => AnnouncementReadiness::AwaitingClear,
+                Some(Phase::AwaitingBaseline) | None => AnnouncementReadiness::AwaitingBaseline,
+            }
+        };
+        AnnouncementDiagnostics {
+            readiness,
+            last_event: self.last_event,
+        }
     }
     pub fn reject_input(&mut self) -> JourneyResult {
         self.tainted = true;
         self.previous = None;
         self.removal_candidate = None;
         self.phase = Some(Phase::AwaitingBaseline);
+        self.darts.clear();
+        self.announced = 0;
+        self.last_event = Some(AnnouncementEvent {
+            disposition: AnnouncementDisposition::Invalid,
+            reason: AnnouncementReason::InvalidInput,
+        });
         JourneyResult::Invalid
     }
     pub fn ingest<D: AnnouncementDelivery>(
@@ -190,12 +276,44 @@ impl LocalJourney {
             self.reset();
         }
         self.settings = Some(current_settings);
+        let initial_reason = match &event {
+            LocalEvent::Unknown => AnnouncementReason::UnrelatedTopic,
+            LocalEvent::Invalid => AnnouncementReason::InvalidInput,
+            LocalEvent::Motion {
+                takeout_partial: Some(true),
+                ..
+            }
+            | LocalEvent::Motion {
+                takeout_full: Some(true),
+                ..
+            } => AnnouncementReason::NoEligibleCollection,
+            LocalEvent::Motion { .. } => AnnouncementReason::InactiveMotion,
+            LocalEvent::State(state) if state.running == Some(false) => {
+                AnnouncementReason::BoardStopped
+            }
+            LocalEvent::State(state)
+                if self
+                    .previous
+                    .as_ref()
+                    .is_some_and(|previous| previous.throws == state.throws) =>
+            {
+                AnnouncementReason::DuplicateState
+            }
+            LocalEvent::State(_) if self.phase == Some(Phase::AwaitingClear) => {
+                AnnouncementReason::AwaitingClear
+            }
+            LocalEvent::State(_) => AnnouncementReason::BaselineRequired,
+        };
         if !enabled {
             self.settings = None;
             self.reset();
+            self.last_event = Some(AnnouncementEvent {
+                disposition: AnnouncementDisposition::Suppressed,
+                reason: AnnouncementReason::Disabled,
+            });
             return JourneyResult::Suppressed;
         }
-        match event {
+        let result = match event {
             LocalEvent::Invalid => self.reject_input(),
             LocalEvent::Unknown => JourneyResult::Suppressed,
             LocalEvent::Motion {
@@ -208,8 +326,72 @@ impl LocalJourney {
             } => self.removal(mode, room, delivery),
             LocalEvent::Motion { .. } => JourneyResult::Suppressed,
             LocalEvent::State(state) => self.state(state, mode, room, delivery),
+        };
+        if result == JourneyResult::Invalid {
+            self.reject_input();
         }
+        let (reason, disposition) = match result {
+            JourneyResult::Baseline
+                if matches!(
+                    self.diagnostics().readiness,
+                    AnnouncementReadiness::Collecting { dart_count: 0 }
+                ) =>
+            {
+                (
+                    AnnouncementReason::BaselineEstablished,
+                    AnnouncementDisposition::Processed,
+                )
+            }
+            JourneyResult::Baseline => (
+                AnnouncementReason::BaselineRequired,
+                AnnouncementDisposition::Suppressed,
+            ),
+            JourneyResult::Dart(_) => (
+                AnnouncementReason::DartAccepted,
+                AnnouncementDisposition::Processed,
+            ),
+            JourneyResult::Total(_) => (
+                AnnouncementReason::TotalAccepted,
+                AnnouncementDisposition::Processed,
+            ),
+            JourneyResult::Invalid => (
+                match initial_reason {
+                    AnnouncementReason::InvalidInput | AnnouncementReason::BoardStopped => {
+                        initial_reason
+                    }
+                    _ => AnnouncementReason::AmbiguousCollection,
+                },
+                AnnouncementDisposition::Invalid,
+            ),
+            JourneyResult::DeliveryFailed(_) => (
+                AnnouncementReason::DeliveryFailure,
+                AnnouncementDisposition::Processed,
+            ),
+            JourneyResult::Suppressed if initial_reason == AnnouncementReason::UnrelatedTopic => (
+                AnnouncementReason::UnrelatedTopic,
+                AnnouncementDisposition::Ignored,
+            ),
+            JourneyResult::Suppressed
+                if self.removal_candidate.is_some()
+                    && matches!(
+                        initial_reason,
+                        AnnouncementReason::BaselineRequired | AnnouncementReason::AwaitingClear
+                    ) =>
+            {
+                (
+                    AnnouncementReason::RemovalCandidate,
+                    AnnouncementDisposition::Suppressed,
+                )
+            }
+            JourneyResult::Suppressed => (initial_reason, AnnouncementDisposition::Suppressed),
+        };
+        self.last_event = Some(AnnouncementEvent {
+            disposition,
+            reason,
+        });
+        result
     }
+
     fn state<D: AnnouncementDelivery>(
         &mut self,
         state: LocalState,
@@ -218,20 +400,7 @@ impl LocalJourney {
         delivery: &mut D,
     ) -> JourneyResult {
         if state.running == Some(false) {
-            self.reset();
-            return JourneyResult::Suppressed;
-        }
-        if mode == AnnouncementMode::TotalOnly
-            && self.phase == Some(Phase::Collecting)
-            && !self.darts.is_empty()
-            && state.throws.as_ref().is_some_and(Vec::is_empty)
-            && state.num_throws == Some(0)
-        {
-            self.previous = Some(state);
-            self.removal_candidate = Some(self.darts.clone());
-            self.phase = Some(Phase::AwaitingClear);
-            self.darts.clear();
-            return JourneyResult::Suppressed;
+            return self.reject_input();
         }
         if self.phase == Some(Phase::AwaitingClear)
             && state.throws.as_ref().is_some_and(Vec::is_empty)
@@ -254,6 +423,19 @@ impl LocalJourney {
         }
         if self.phase != Some(Phase::Collecting) {
             if self.phase == Some(Phase::AwaitingClear) {
+                if self.removal_candidate.is_some() {
+                    let old = self
+                        .previous
+                        .as_ref()
+                        .and_then(|previous| previous.throws.as_ref());
+                    if let (Some(old), Some(new)) = (old, state.throws.as_ref())
+                        && old.ends_with(new)
+                    {
+                        self.previous = Some(state);
+                        return JourneyResult::Suppressed;
+                    }
+                    return self.reject_input();
+                }
                 let old = self.previous.as_ref().and_then(|s| s.throws.as_ref());
                 if let (Some(old), Some(new)) = (old, state.throws.as_ref())
                     && new.len() < old.len()
@@ -306,28 +488,21 @@ impl LocalJourney {
             return JourneyResult::Suppressed;
         }
         if new.len() < old.len() {
-            if !self.tainted
+            let eligible_snapshot = !self.tainted
                 && !old.is_empty()
                 && (new.is_empty() || (self.darts.len() == old.len() && new == self.darts[1..]))
-                && (mode == AnnouncementMode::TotalOnly || self.announced == self.darts.len())
-            {
+                && (mode == AnnouncementMode::TotalOnly || self.announced == self.darts.len());
+            if eligible_snapshot {
                 self.removal_candidate = Some(self.darts.clone());
                 self.phase = Some(Phase::AwaitingClear);
                 self.darts.clear();
                 self.announced = 0;
             } else {
-                self.removal_candidate = None;
-                self.tainted = true;
+                return self.reject_input();
             }
             self.previous = Some(state);
-            if new.is_empty() {
-                if mode == AnnouncementMode::TotalOnly {
-                    self.phase = Some(Phase::AwaitingClear);
-                    self.removal_candidate = Some(self.darts.clone());
-                    self.announced = 0;
-                } else {
-                    self.phase = Some(Phase::AwaitingBaseline);
-                }
+            if new.is_empty() && self.removal_candidate.is_none() {
+                self.phase = Some(Phase::AwaitingBaseline);
             }
             return JourneyResult::Suppressed;
         }
@@ -358,7 +533,7 @@ impl LocalJourney {
                 JourneyResult::Dart(Some(score))
             }
             Err(e) => {
-                self.tainted = true;
+                self.reject_input();
                 JourneyResult::DeliveryFailed(e)
             }
         }
@@ -372,47 +547,54 @@ impl LocalJourney {
         if self.removal_seen {
             return JourneyResult::Suppressed;
         }
-        self.removal_seen = true;
-        let mut had_candidate = self.removal_candidate.is_some();
-        if mode == AnnouncementMode::TotalOnly && !had_candidate && !self.darts.is_empty() {
-            self.removal_candidate = Some(self.darts.clone());
-            had_candidate = true;
-        }
+        let retained_candidate = self.removal_candidate.is_some();
         let candidate = self
             .removal_candidate
             .take()
-            .unwrap_or_else(|| self.darts.clone());
+            .or_else(|| (!self.darts.is_empty()).then(|| self.darts.clone()));
+        let Some(candidate) = candidate else {
+            return JourneyResult::Suppressed;
+        };
         let candidate_len = candidate.len();
-        let total_only_cleared_candidate = mode == AnnouncementMode::TotalOnly && had_candidate;
-        self.darts = candidate.clone();
         if self.tainted
             || candidate.is_empty()
             || candidate.len() > MAX_DARTS
             || (mode == AnnouncementMode::EachDartThenTotal
-                && !had_candidate
+                && !retained_candidate
                 && self.announced != candidate.len())
         {
             return JourneyResult::Suppressed;
         }
+        let clear_before_marker = self
+            .previous
+            .as_ref()
+            .and_then(|state| state.throws.as_ref())
+            .is_some_and(Vec::is_empty);
+        self.darts = candidate.clone();
         let total: u16 = candidate.iter().map(|v| u16::from(*v)).sum();
         let key = self.key("total", candidate_len);
         if !self.in_flight.insert(key.clone()) {
             return JourneyResult::Suppressed;
         }
-        match deliver(delivery, room, &total.to_string(), key) {
-            Ok(()) => {
-                self.serial = self.serial.saturating_add(1);
-                self.phase = Some(if total_only_cleared_candidate {
-                    Phase::AwaitingBaseline
-                } else {
-                    Phase::AwaitingClear
-                });
-                JourneyResult::Total(Some(total))
-            }
-            Err(e) => {
-                self.phase = Some(Phase::AwaitingClear);
-                JourneyResult::DeliveryFailed(e)
-            }
+        // The explicit boundary is consumed even when submission fails. A clear
+        // already observed belongs to this collection, not the next one.
+        let result = deliver(delivery, room, &total.to_string(), key);
+        self.serial = self.serial.saturating_add(1);
+        if clear_before_marker {
+            self.phase = Some(Phase::Collecting);
+            self.darts.clear();
+            self.announced = 0;
+            self.tainted = false;
+            self.removal_seen = false;
+            self.removal_candidate = None;
+            self.in_flight.clear();
+        } else {
+            self.removal_seen = true;
+            self.phase = Some(Phase::AwaitingClear);
+        }
+        match result {
+            Ok(()) => JourneyResult::Total(Some(total)),
+            Err(error) => JourneyResult::DeliveryFailed(error),
         }
     }
     fn key(&self, kind: &str, n: usize) -> String {
@@ -578,6 +760,160 @@ mod tests {
         ingest(&mut j, state(&[]), &mut d);
         assert_eq!(ingest(&mut j, full(), &mut d), JourneyResult::Suppressed);
     }
+    #[test]
+    fn clear_before_marker_starts_next_collection_without_second_clear() {
+        for mode in [
+            AnnouncementMode::EachDartThenTotal,
+            AnnouncementMode::TotalOnly,
+        ] {
+            let mut j = LocalJourney::default();
+            let mut d = RecordingDelivery::default();
+            j.ingest(true, mode, ROOM, empty(), &mut d);
+            j.ingest(true, mode, ROOM, state(&[20]), &mut d);
+            j.ingest(true, mode, ROOM, empty(), &mut d);
+            assert_eq!(
+                j.diagnostics().readiness,
+                AnnouncementReadiness::AwaitingRemoval
+            );
+            assert_eq!(
+                j.ingest(true, mode, ROOM, partial(), &mut d),
+                JourneyResult::Total(Some(20))
+            );
+            assert_eq!(
+                j.diagnostics().readiness,
+                AnnouncementReadiness::Collecting { dart_count: 0 }
+            );
+            j.ingest(true, mode, ROOM, state(&[7]), &mut d);
+            assert_eq!(
+                j.ingest(true, mode, ROOM, full(), &mut d),
+                JourneyResult::Total(Some(7))
+            );
+            assert_eq!(
+                d.requests
+                    .iter()
+                    .map(|request| request.text.as_str())
+                    .collect::<Vec<_>>(),
+                if mode == AnnouncementMode::EachDartThenTotal {
+                    vec!["20", "20", "7", "7"]
+                } else {
+                    vec!["20", "7"]
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_shrink_preserves_original_removal_candidate() {
+        for mode in [
+            AnnouncementMode::EachDartThenTotal,
+            AnnouncementMode::TotalOnly,
+        ] {
+            let mut j = LocalJourney::default();
+            let mut d = RecordingDelivery::default();
+            for event in [
+                empty(),
+                state(&[20]),
+                state(&[20, 5]),
+                state(&[20, 5, 1]),
+                state(&[5, 1]),
+                state(&[5, 1]),
+                state(&[1]),
+            ] {
+                j.ingest(true, mode, ROOM, event, &mut d);
+            }
+            assert_eq!(
+                j.diagnostics().readiness,
+                AnnouncementReadiness::AwaitingRemoval
+            );
+            assert_eq!(
+                j.ingest(true, mode, ROOM, full(), &mut d),
+                JourneyResult::Total(Some(26))
+            );
+            assert_eq!(
+                j.ingest(true, mode, ROOM, full(), &mut d),
+                JourneyResult::Suppressed
+            );
+            assert_eq!(d.requests.last().unwrap().text, "26");
+        }
+    }
+
+    #[test]
+    fn failed_total_after_clear_consumes_only_its_own_collection() {
+        for mode in [
+            AnnouncementMode::EachDartThenTotal,
+            AnnouncementMode::TotalOnly,
+        ] {
+            let mut j = LocalJourney::default();
+            let mut d = RecordingDelivery::default();
+            for event in [empty(), state(&[20]), empty()] {
+                j.ingest(true, mode, ROOM, event, &mut d);
+            }
+            assert_eq!(
+                j.ingest(true, mode, ROOM, full(), &mut UnavailableDelivery),
+                JourneyResult::DeliveryFailed(DeliveryError::Unavailable)
+            );
+            assert_eq!(
+                j.diagnostics().readiness,
+                AnnouncementReadiness::Collecting { dart_count: 0 }
+            );
+            assert_eq!(
+                j.ingest(true, mode, ROOM, full(), &mut d),
+                JourneyResult::Suppressed
+            );
+            j.ingest(true, mode, ROOM, state(&[7]), &mut d);
+            assert_eq!(
+                j.ingest(true, mode, ROOM, full(), &mut d),
+                JourneyResult::Total(Some(7))
+            );
+            assert_eq!(
+                d.requests
+                    .iter()
+                    .map(|request| request.text.as_str())
+                    .collect::<Vec<_>>(),
+                if mode == AnnouncementMode::EachDartThenTotal {
+                    vec!["20", "7", "7"]
+                } else {
+                    vec!["7"]
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn ambiguous_collection_requires_fresh_empty_baseline() {
+        for mode in [
+            AnnouncementMode::EachDartThenTotal,
+            AnnouncementMode::TotalOnly,
+        ] {
+            for clear_before_correction in [false, true] {
+                let mut j = LocalJourney::default();
+                let mut d = RecordingDelivery::default();
+                j.ingest(true, mode, ROOM, empty(), &mut d);
+                j.ingest(true, mode, ROOM, state(&[20]), &mut d);
+                if clear_before_correction {
+                    j.ingest(true, mode, ROOM, empty(), &mut d);
+                }
+                assert_eq!(
+                    j.ingest(true, mode, ROOM, state(&[7]), &mut d),
+                    JourneyResult::Invalid
+                );
+                assert_eq!(
+                    j.diagnostics().readiness,
+                    AnnouncementReadiness::AwaitingBaseline
+                );
+                assert_eq!(
+                    j.ingest(true, mode, ROOM, full(), &mut d),
+                    JourneyResult::Suppressed
+                );
+                j.ingest(true, mode, ROOM, empty(), &mut d);
+                j.ingest(true, mode, ROOM, state(&[5]), &mut d);
+                assert_eq!(
+                    j.ingest(true, mode, ROOM, full(), &mut d),
+                    JourneyResult::Total(Some(5))
+                );
+            }
+        }
+    }
 
     #[test]
     fn clear_waits_for_explicit_removal_before_announcing_total() {
@@ -673,6 +1009,12 @@ mod tests {
             )
             .is_err()
         );
+    }
+    #[test]
+    fn omitted_zero_count_is_a_valid_clean_empty_state() {
+        let state = parse_state(&json!({"running": true, "numThrows": 0})).unwrap();
+        assert_eq!(state.num_throws, Some(0));
+        assert_eq!(state.throws, Some(Vec::new()));
     }
 
     #[test]
@@ -782,5 +1124,98 @@ mod tests {
             );
         }
         assert!(j.in_flight.len() <= 1);
+    }
+    #[test]
+    fn diagnostics_distinguish_readiness_and_event_disposition() {
+        let mut j = LocalJourney::default();
+        let mut d = RecordingDelivery::default();
+        assert_eq!(j.diagnostics().readiness, AnnouncementReadiness::Disabled);
+        j.ingest(
+            true,
+            AnnouncementMode::EachDartThenTotal,
+            ROOM,
+            empty(),
+            &mut d,
+        );
+        assert_eq!(
+            j.diagnostics().readiness,
+            AnnouncementReadiness::Collecting { dart_count: 0 }
+        );
+        assert_eq!(
+            j.diagnostics().last_event,
+            Some(AnnouncementEvent {
+                disposition: AnnouncementDisposition::Processed,
+                reason: AnnouncementReason::BaselineEstablished,
+            })
+        );
+        j.ingest(
+            true,
+            AnnouncementMode::EachDartThenTotal,
+            ROOM,
+            LocalEvent::Unknown,
+            &mut d,
+        );
+        assert_eq!(
+            j.diagnostics().last_event,
+            Some(AnnouncementEvent {
+                disposition: AnnouncementDisposition::Ignored,
+                reason: AnnouncementReason::UnrelatedTopic,
+            })
+        );
+    }
+    #[test]
+    fn startup_nonempty_state_is_suppressed_until_clean_baseline() {
+        let mut j = LocalJourney::default();
+        let mut d = RecordingDelivery::default();
+        assert_eq!(
+            j.ingest(
+                true,
+                AnnouncementMode::EachDartThenTotal,
+                ROOM,
+                state(&[3, 7, 7]),
+                &mut d,
+            ),
+            JourneyResult::Baseline
+        );
+        assert_eq!(
+            j.diagnostics(),
+            AnnouncementDiagnostics {
+                readiness: AnnouncementReadiness::AwaitingBaseline,
+                last_event: Some(AnnouncementEvent {
+                    disposition: AnnouncementDisposition::Suppressed,
+                    reason: AnnouncementReason::BaselineRequired,
+                }),
+            }
+        );
+        assert!(d.requests.is_empty());
+    }
+
+    #[test]
+    fn parser_rejects_unknown_counts_and_contradictory_empty_shapes() {
+        for value in [
+            json!({"numThrows": null, "throws": []}),
+            json!({"numThrows": 1}),
+            json!({"numThrows": 0, "throws": [{"segment": {"number": 3, "multiplier": 1}}]}),
+            json!({"numThrows": 0, "throws": null}),
+            json!({"numThrows": 1, "throws": null}),
+            json!({"numThrows": 4, "throws": []}),
+        ] {
+            assert!(
+                parse_state(&value).is_err(),
+                "accepted invalid state: {value}"
+            );
+        }
+        assert_eq!(
+            parse_json(br#"{"type":"camera_status","data":{"anything":true}}"#).unwrap(),
+            LocalEvent::Unknown
+        );
+        assert_eq!(
+            parse_json(br#"{"type":"camera_status","data":{"numThrows":"bad"}}"#).unwrap(),
+            LocalEvent::Unknown
+        );
+        assert_eq!(
+            parse_json(br#"{"type":"camera_status"}"#).unwrap(),
+            LocalEvent::Unknown
+        );
     }
 }

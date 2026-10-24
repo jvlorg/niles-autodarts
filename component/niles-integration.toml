@@ -1,6 +1,6 @@
 id = "autodarts"
 name = "Autodarts"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 authors = ["Johan Volmers Leth"]
 description = "Read Autodarts Board Manager status and submit detection-derived commentary to one Niles room."
 keywords = ["autodarts", "dartboard"]
