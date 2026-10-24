@@ -10,7 +10,7 @@ Status: the checked-in component has a room-bound Niles speech-stream path and e
 
 Core replay, fake-WIT component ingress, and compiled pinned-host proof now consume the exact reduced real capture before the separate synthetic continuation. The real-capture phase asserts no initial nonempty replay, baseline recovery at the omitted-array event, and no speech submissions before continuation. This remains offline policy/submission evidence: it does not establish installation, live event ordering or miss encoding, household routing, host compatibility, or audible playback.
 
-The current local candidate is `v0.1.0-alpha.2`. Full final-head verification results, suite counts, package hashes, and the exact verified commit are recorded below only after the final clean commit is verified. The compiled proof requires free loopback port 3180 and uses the pinned host; no live device writes, installation, deployment, release publication, or audible acceptance occurs here.
+The current local candidate is `v0.1.0-alpha.2`. Historical verification results, suite counts, package hashes, and their exact source commits are recorded below. Final-head acceptance evidence belongs to the exact pushed commit and is recorded in [PR #9](https://github.com/jvlorg/niles-autodarts/pull/9) and the final report after verification. The compiled proof requires free loopback port 3180 and uses the pinned host; no live device writes, installation, deployment, release publication, or audible acceptance occurs here.
 
 Existing synthetic regressions continue to cover duplicate/progressive shrink, ambiguous scoring, stopped-board pending speech, failed submission, reconnect and reconfiguration safety. Those edge cases remain in synthetic coverage and are not mixed into the supplied real capture.
 
@@ -32,7 +32,7 @@ The exact unchanged candidate only permits WebSocket ports 80/3180/443, so compi
 
 Synthetic eligibility and recording output do not establish installed-host compatibility, live event ordering/miss encoding, household routing or human audibility. No host-private Rust function is used as an add-on API. No live device writes, persistent installation, deployment or release publication occur in these fixtures.
 
-## Final JVL-13 verification
+## JVL-13 verification record
 
 The supplied reduced real capture is replayed as an ordered 14-envelope array through core JSON ingress, fake-WIT component callbacks, and the compiled pinned-host proof. It stays silent through the initial nonempty 3/7/7 collection; the captured zero-count state with omitted `throws` establishes `Collecting (0 darts)`. The separate synthetic continuation then produces three successive collections: `3,7,7,17` repeated three times in Each dart → Total and `17` repeated three times in Total only. No synthetic baseline is inserted into the real capture.
 
@@ -51,4 +51,6 @@ The package verified by the `f19753643dd936376a6659ce24b9168ec2f2a60e` run recor
 | `provenance.json` | `9bcf94721e7dbe344e3efa4a816df29ac0e2c9aa83f34ae32a7d82bd26cc13ac` |
 | `SHA256SUMS` | `a8c3171a815b126c812faa108a381976fdc9f57c75f1c27e04ff9ca8fdc0a669` |
 
-The current PR head `a175d1601051ff5bbd7b7e9162697f03e5066f15` adds a capture-fidelity regression assertion and verification-evidence wording after those full-chain runs. Its scoped formatting, strict Clippy, `cargo test -p autodarts-core`, and documentation diff checks passed; the complete maintained chain must be rerun for this head before final acceptance. This evidence remains offline policy, compiled ingress, and Niles scheduler proof. It does not establish installed-host compatibility, live event ordering or miss encoding, household routing, or audible playback. No live-device writes, installation, deployment, release publication, or audible retest occurred.
+Commit `a175d1601051ff5bbd7b7e9162697f03e5066f15` includes the capture-fidelity regression assertion and verification-evidence wording added after those full-chain runs. Scoped formatting, strict Clippy, `cargo test -p autodarts-core`, and documentation diff checks were recorded for that revision; they are not full-chain evidence for a later head. Final acceptance requires the complete maintained chain on the exact pushed commit, with its SHA, counts, and package hashes recorded in PR #9 and the final report. Keeping that final-head record outside the commit avoids creating another unverified head merely to record its own SHA.
+
+This evidence remains offline policy, compiled ingress, and Niles scheduler proof. It does not establish installed-host compatibility, live event ordering or miss encoding, household routing, or audible playback. No live-device writes, installation, deployment, release publication, or audible retest occurred.
