@@ -58,11 +58,19 @@ pub fn detection_result(
     dispatch: DetectionDispatch,
     snapshot: &Snapshot,
 ) -> DetectionResult {
-    let observed = match snapshot.state {
-        BoardState::Observed { running, .. } => running,
-        BoardState::Unknown => None,
+    let (observed, starting) = match &snapshot.state {
+        BoardState::Observed {
+            running,
+            status,
+            event,
+            ..
+        } => (
+            *running,
+            status.as_deref() == Some("Starting") || event.as_deref() == Some("Starting"),
+        ),
+        BoardState::Unknown => (None, false),
     };
-    if snapshot.availability == Availability::Available && observed == Some(desired) {
+    if snapshot.availability == Availability::Available && !starting && observed == Some(desired) {
         DetectionResult::Confirmed(desired)
     } else {
         DetectionResult::Pending {
@@ -212,6 +220,23 @@ mod tests {
                 dispatch: DetectionDispatch::Acknowledged,
             }
         );
+    }
+    #[test]
+    fn starting_running_true_is_not_confirmation() {
+        let mut fixture = Fixture::new(
+            Ok(200),
+            [response(200, r#"{"status":"Starting","running":true}"#)],
+        );
+        let dispatch =
+            dispatch_detection(&config(), &mut fixture, DetectionCommand::Start).unwrap();
+        let snapshot = poll_state(&config(), &mut fixture);
+        assert!(matches!(
+            detection_result(true, dispatch, &snapshot),
+            DetectionResult::Pending {
+                observed: Some(true),
+                ..
+            }
+        ));
     }
 
     #[test]
