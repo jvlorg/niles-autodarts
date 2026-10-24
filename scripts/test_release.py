@@ -62,7 +62,7 @@ elif os.environ.get("MISSING_WASM") != "1":
         rustc.chmod(0o755)
         self.env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}",
                     "FIXTURE_ROOT": str(self.root), "CARGO_TARGET_DIR": "build"}
-        self.output = self.root / "dist/v0.1.0-alpha.1"
+        self.output = self.root / "dist/v0.1.0-alpha.2"
 
     def git(self, repo, *args):
         return subprocess.run(["git", "-C", str(repo), *args], check=True,
@@ -72,8 +72,8 @@ elif os.environ.get("MISSING_WASM") != "1":
         self.git(repo, "add", ".")
         self.git(repo, "commit", "--quiet", "-m", "fixture")
 
-    def package(self, **env):
-        return subprocess.run(["bash", "scripts/package.sh", "--tag", "v0.1.0-alpha.1",
+    def package(self, tag="v0.1.0-alpha.2", **env):
+        return subprocess.run(["bash", "scripts/package.sh", "--tag", tag,
                                "--output", str(self.output)], cwd=self.root,
                               env={**self.env, **env}, capture_output=True, text=True)
 
@@ -82,9 +82,13 @@ elif os.environ.get("MISSING_WASM") != "1":
         self.assertIn(reason, result.stderr)
         self.assertFalse(self.output.exists(), "failed candidate must not be published locally")
 
+    def test_alpha1_and_malformed_tags_are_rejected(self):
+        for tag in ("v0.1.0-alpha.1", "v0.1.0-alpha.2.1", "not-a-tag"):
+            self.assert_refused(self.package(tag=tag), "Usage:")
+
     def test_metadata_mismatch_fails_before_build(self):
         manifest = self.root / "manifest.toml"
-        manifest.write_text(manifest.read_text().replace('version = "0.1.0-alpha.1"', 'version = "0.1.0"'))
+        manifest.write_text(manifest.read_text().replace('version = "0.1.0-alpha.2"', 'version = "0.1.0"'))
         self.commit(self.root)
         self.assert_refused(self.package(), "version mismatch")
         self.assertFalse((self.root / "build").exists())

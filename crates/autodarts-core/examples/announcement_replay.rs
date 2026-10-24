@@ -4,6 +4,7 @@ use autodarts_core::{
     RecordingDelivery,
 };
 
+const CAPTURE: &str = include_str!("../tests/fixtures/board-manager-1.0.7-reduced-capture.json");
 const BASELINE: &str = r#"{"type":"state","data":{"running":true,"numThrows":0,"throws":[]}}"#;
 const DART_ONE: &str = r#"{"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"number":20,"multiplier":1}}]}}"#;
 const DART_TWO: &str = r#"{"type":"state","data":{"running":true,"numThrows":2,"throws":[{"segment":{"number":20,"multiplier":1}},{"segment":{"number":5,"multiplier":1}}]}}"#;
@@ -29,11 +30,23 @@ fn replay_mode(mode: AnnouncementMode) -> RecordingDelivery {
         .expect("valid replay settings");
     let mut session = AnnouncementSession::new(settings);
     let mut delivery = RecordingDelivery::default();
+    let capture: serde_json::Value = serde_json::from_str(CAPTURE).expect("valid capture");
+    for envelope in capture.as_array().expect("capture array") {
+        let encoded = envelope.to_string();
+        run(&mut session, &mut delivery, &encoded);
+    }
+    assert!(
+        delivery.requests.is_empty(),
+        "captured startup collection must not submit policy requests"
+    );
+    println!("{mode_name} captured startup: no policy submissions");
     for collection in 1..=3 {
-        assert_eq!(
-            run(&mut session, &mut delivery, BASELINE),
-            JourneyResult::Baseline
-        );
+        if collection > 1 {
+            assert_eq!(
+                run(&mut session, &mut delivery, BASELINE),
+                JourneyResult::Baseline
+            );
+        }
         assert_eq!(
             run(&mut session, &mut delivery, DART_ONE),
             JourneyResult::Dart((mode == AnnouncementMode::EachDartThenTotal).then_some(20))
@@ -67,9 +80,7 @@ fn replay_mode(mode: AnnouncementMode) -> RecordingDelivery {
 }
 
 fn main() {
-    println!(
-        "Synthetic source-derived replay (not captures): settings → JSON → session → recording"
-    );
+    println!("Reduced capture then labelled synthetic replay: JSON → session → recording");
     let each = replay_mode(AnnouncementMode::EachDartThenTotal);
     assert_eq!(each.requests.len(), 12);
     assert_eq!(

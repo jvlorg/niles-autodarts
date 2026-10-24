@@ -3,7 +3,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
-version="0.1.0-alpha.1"
+version="0.1.0-alpha.2"
 toolchain="${RUST_TOOLCHAIN:-1.99.0}"
 tag=""
 output=""

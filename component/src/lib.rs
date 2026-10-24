@@ -58,6 +58,8 @@ struct Runtime {
     speech_history: VecDeque<SpeechCompletion>,
     speech_poll_error: Option<String>,
     speech_submission_error: Option<String>,
+    latest_submission: Option<String>,
+    last_event_decision: Option<autodarts_core::JourneyDecision>,
     speech_enabled: bool,
     websocket_id: Option<u32>,
     websocket_status: Option<String>,
@@ -346,10 +348,12 @@ fn ingest_announcement_json(json: &[u8]) -> autodarts_core::local_score::Journey
             generation: runtime.speech_generation,
             pending: &mut runtime.speech_pending,
             submission_error: &mut runtime.speech_submission_error,
+            last_submission: &mut runtime.latest_submission,
         };
         let result = runtime
             .announcement_session
             .ingest_json(json, &mut delivery);
+        runtime.last_event_decision = runtime.announcement_session.last_decision();
         if result == autodarts_core::local_score::JourneyResult::Invalid {
             invalidate_speech(runtime, "invalid Board event");
             reopen_speech(runtime);
@@ -374,12 +378,12 @@ fn remember_completion(runtime: &mut Runtime, completion: SpeechCompletion) {
         runtime.speech_history.pop_front();
     }
 }
-
 struct SpeechDelivery<'a> {
     session: Option<u32>,
     generation: u64,
     pending: &'a mut BTreeMap<u64, SpeechRequest>,
     submission_error: &'a mut Option<String>,
+    last_submission: &'a mut Option<String>,
 }
 impl autodarts_core::AnnouncementDelivery for SpeechDelivery<'_> {
     fn deliver(
@@ -388,11 +392,13 @@ impl autodarts_core::AnnouncementDelivery for SpeechDelivery<'_> {
     ) -> Result<(), autodarts_core::DeliveryError> {
         let Some(session) = self.session else {
             *self.submission_error = Some("Speech stream unavailable".into());
+            *self.last_submission = Some("Submission failed: speech stream unavailable".into());
             return Err(autodarts_core::DeliveryError::Unavailable);
         };
         if self.pending.len() >= MAX_PENDING_SPEECH {
             *self.submission_error =
                 Some("Speech request tracking full; submission rejected".into());
+            *self.last_submission = Some("Submission failed: request tracking full".into());
             return Err(autodarts_core::DeliveryError::Failed(
                 "speech request tracking full".into(),
             ));
@@ -409,11 +415,13 @@ impl autodarts_core::AnnouncementDelivery for SpeechDelivery<'_> {
                     },
                 );
                 *self.submission_error = None;
+                *self.last_submission = Some(format!("Accepted request {id}: {}", request.text));
                 Ok(())
             }
             Err(error) => {
                 let message = format!("Speech submit failed: {error:?}");
                 *self.submission_error = Some(message.clone());
+                *self.last_submission = Some("Submission failed: speech host rejected".into());
                 Err(autodarts_core::DeliveryError::Failed(message))
             }
         }
@@ -585,6 +593,44 @@ fn render_tree(snapshot: &Snapshot, command_status: Option<&str>) -> UiTree {
     append_text_nodes(&mut nodes, diagnostics_text(snapshot, command_status));
     UiTree { nodes }
 }
+
+fn readiness_text(readiness: autodarts_core::JourneyReadiness) -> String {
+    match readiness {
+        autodarts_core::JourneyReadiness::Disabled => "disabled".into(),
+        autodarts_core::JourneyReadiness::AwaitingBaseline => "awaiting clean baseline".into(),
+        autodarts_core::JourneyReadiness::Collecting { darts } => {
+            format!("collecting ({darts} validated darts)")
+        }
+        autodarts_core::JourneyReadiness::AwaitingRemoval { darts } => {
+            format!("awaiting explicit removal ({darts} cached darts)")
+        }
+        autodarts_core::JourneyReadiness::AwaitingClear => "awaiting clean clear".into(),
+    }
+}
+
+fn decision_text(decision: Option<autodarts_core::JourneyDecision>) -> String {
+    match decision {
+        None => "none".into(),
+        Some(autodarts_core::JourneyDecision::IgnoredUnrelated) => "ignored unrelated topic".into(),
+        Some(autodarts_core::JourneyDecision::IgnoredMotion) => "ignored no-op motion".into(),
+        Some(autodarts_core::JourneyDecision::SuppressedDisabled) => "suppressed: disabled".into(),
+        Some(autodarts_core::JourneyDecision::SuppressedAwaitingBaseline) => {
+            "suppressed: awaiting baseline".into()
+        }
+        Some(autodarts_core::JourneyDecision::SuppressedDuplicate) => {
+            "suppressed: duplicate".into()
+        }
+        Some(autodarts_core::JourneyDecision::SuppressedAmbiguous) => {
+            "suppressed: ambiguous".into()
+        }
+        Some(autodarts_core::JourneyDecision::BaselineAccepted) => "baseline accepted".into(),
+        Some(autodarts_core::JourneyDecision::CollectionProgress) => "collection progress".into(),
+        Some(autodarts_core::JourneyDecision::AwaitingRemoval) => "awaiting removal".into(),
+        Some(autodarts_core::JourneyDecision::Invalid) => "invalid input".into(),
+        Some(autodarts_core::JourneyDecision::Completed) => "collection completed".into(),
+        Some(autodarts_core::JourneyDecision::DeliveryFailed) => "delivery failed".into(),
+    }
+}
 fn invalidate_speech(runtime: &mut Runtime, reason: &str) {
     runtime.announcement_session.connection_reset();
     runtime.speech_generation = runtime.speech_generation.saturating_add(1);
@@ -734,6 +780,8 @@ impl Guest for Plugin {
                     .map_or_else(VecDeque::new, |runtime| runtime.speech_history),
                 speech_poll_error: None,
                 speech_submission_error: speech_open_error,
+                latest_submission: None,
+                last_event_decision: None,
                 speech_enabled,
                 websocket_id,
                 websocket_status,
@@ -799,13 +847,13 @@ impl Guest for Plugin {
                     observed: Some(true),
                 } => "stop acknowledged; still running".into(),
                 DetectionResult::Pending {
-                    desired: true,
-                    observed: None,
-                } => "start acknowledged; observed state unknown".into(),
-                DetectionResult::Pending {
                     desired: false,
                     observed: None,
                 } => "stop acknowledged; observed state unknown".into(),
+                DetectionResult::Pending {
+                    desired: true,
+                    observed: None,
+                } => "start acknowledged; observed state unknown".into(),
                 DetectionResult::Pending {
                     desired: true,
                     observed: Some(true),
@@ -845,22 +893,38 @@ impl Guest for Plugin {
         if surface != "board" {
             return Err("Unknown Autodarts surface.".into());
         }
-        let (snapshot, status, announcements, speech_status, speech_enabled, websocket_status) =
-            RUNTIME.with(|slot| {
-                slot.borrow()
-                    .as_ref()
-                    .map(|runtime| {
-                        (
-                            runtime.snapshot.clone(),
-                            runtime.command_status.clone(),
-                            runtime.announcements.clone(),
-                            speech_status_line(runtime),
-                            runtime.speech_enabled,
-                            runtime.websocket_status.clone(),
-                        )
-                    })
-                    .ok_or_else(|| "Autodarts is not configured.".to_string())
-            })?;
+        let (
+            snapshot,
+            status,
+            announcements,
+            speech_status,
+            speech_enabled,
+            websocket_status,
+            readiness,
+            decision,
+            latest_submission,
+            pending_count,
+            terminal_count,
+        ) = RUNTIME.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .map(|runtime| {
+                    (
+                        runtime.snapshot.clone(),
+                        runtime.command_status.clone(),
+                        runtime.announcements.clone(),
+                        speech_status_line(runtime),
+                        runtime.speech_enabled,
+                        runtime.websocket_status.clone(),
+                        runtime.announcement_session.readiness(),
+                        runtime.last_event_decision,
+                        runtime.latest_submission.clone(),
+                        runtime.speech_pending.len(),
+                        runtime.speech_history.len(),
+                    )
+                })
+                .ok_or_else(|| "Autodarts is not configured.".to_string())
+        })?;
         let mut tree = render_tree(&snapshot, status.as_deref());
         let lines = vec![
             format!(
@@ -881,6 +945,8 @@ impl Guest for Plugin {
                 }
             ),
             format!("Announcement room: {}", announcements.room),
+            format!("Announcement readiness: {}", readiness_text(readiness)),
+            format!("Latest event: {}", decision_text(decision)),
             format!(
                 "Speech stream setting: {}",
                 if speech_enabled {
@@ -890,6 +956,12 @@ impl Guest for Plugin {
                 }
             ),
             speech_status,
+            format!(
+                "Latest submission: {}",
+                latest_submission.unwrap_or_else(|| "none".into())
+            ),
+            format!("Speech pending requests: {pending_count}"),
+            format!("Speech terminal outcomes retained: {terminal_count}"),
             websocket_status.unwrap_or_else(|| "Board event stream status unavailable".into()),
         ];
         append_text_nodes(&mut tree.nodes, lines);
@@ -916,12 +988,12 @@ impl Guest for Plugin {
         }
         match message {
             bindings::niles::integration::websocket::Message::Text(text) => {
-                // The core parser checks byte length before parsing, without
-                // allocating a second oversized buffer.
                 let _ = ingest_announcement_json(text.as_bytes());
+                ui::invalidate("board");
             }
             bindings::niles::integration::websocket::Message::Binary(_) => {
                 let _ = ingest_announcement_json(b"invalid non-text WebSocket event");
+                ui::invalidate("board");
             }
         }
     }
@@ -935,12 +1007,12 @@ impl Guest for Plugin {
             if runtime.websocket_id != Some(conn) {
                 return;
             }
+            runtime.last_event_decision = None;
             match status {
                 bindings::niles::integration::websocket::ConnectionStatus::Connected => {
                     runtime.announcement_session.connection_reset();
                     reopen_speech(runtime);
-                    runtime.websocket_status =
-                        Some("Board event stream connected; baseline required".into());
+                    runtime.websocket_status = Some("Board event stream connected".into());
                 }
                 bindings::niles::integration::websocket::ConnectionStatus::Disconnected(reason) => {
                     invalidate_speech(runtime, "Board event disconnect");
@@ -972,6 +1044,7 @@ impl Guest for Plugin {
                 }
             }
         });
+        ui::invalidate("board");
     }
     fn authorize_url(_: String, _: String) -> Result<String, String> {
         Err("Autodarts does not use account authorization.".into())

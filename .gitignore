@@ -11,3 +11,4 @@ __pycache__/
 /.cache/niles/
 /dist/
 /verification/
+/.harness/artifacts/
