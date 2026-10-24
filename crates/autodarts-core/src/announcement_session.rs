@@ -47,10 +47,7 @@ impl AnnouncementSession {
         json: &[u8],
         delivery: &mut D,
     ) -> JourneyResult {
-        let event = match parse_json(json) {
-            Ok(event) => event,
-            Err(_) => LocalEvent::Invalid,
-        };
+        let event = parse_json(json).unwrap_or(LocalEvent::Invalid);
         let Some(mode) = self.settings.mode else {
             self.journey.reconnect();
             return JourneyResult::Suppressed;

@@ -205,13 +205,14 @@ pub fn parse_envelope(value: &Value) -> Result<LocalEvent, &'static str> {
         .get("type")
         .and_then(Value::as_str)
         .ok_or("missing event type")?;
-    if !matches!(kind, "state" | "motion_state") {
-        return Ok(LocalEvent::Unknown);
-    }
-    let data = value.get("data").ok_or("missing event data")?;
     match kind {
-        "state" => parse_state(data).map(LocalEvent::State),
+        "state" => value
+            .get("data")
+            .ok_or("missing event data")
+            .and_then(parse_state)
+            .map(LocalEvent::State),
         "motion_state" => {
+            let data = value.get("data").ok_or("missing event data")?;
             if !data.is_object() {
                 return Err("motion data must be an object");
             }
@@ -220,7 +221,7 @@ pub fn parse_envelope(value: &Value) -> Result<LocalEvent, &'static str> {
                 takeout_full: optional_bool(data, "isTakeoutFull")?,
             })
         }
-        _ => unreachable!("known event type checked above"),
+        _ => Ok(LocalEvent::Unknown),
     }
 }
 
