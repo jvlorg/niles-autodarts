@@ -189,6 +189,7 @@ fn readback_crossing_deadline_does_not_rearm_monitoring() {
 #[test]
 fn persistent_false_expires_and_requires_a_new_post_expiry_observation() {
     setup(initial(false));
+    enable_announcements("total_only");
     Plugin::init().unwrap();
     http::set_replies([response("")]);
     Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).unwrap();
@@ -213,6 +214,7 @@ fn persistent_false_expires_and_requires_a_new_post_expiry_observation() {
             .count(),
         2
     );
+    assert!(speech_stream::calls().opened_rooms.is_empty());
 }
 
 #[test]
@@ -383,6 +385,7 @@ fn composed_acknowledged_but_observed_false_is_pending_and_keeps_actual_state() 
 #[test]
 fn composed_timeout_is_uncertain_without_optimistic_state_and_rejection_is_an_error() {
     setup(initial(false));
+    enable_announcements("total_only");
     Plugin::init().unwrap();
     http::fail_next(http::HttpError::Timeout);
     assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_ok());
@@ -396,8 +399,10 @@ fn composed_timeout_is_uncertain_without_optimistic_state_and_rejection_is_an_er
             .iter()
             .any(|line| line.contains("dispatch uncertain"))
     );
+    assert!(speech_stream::calls().opened_rooms.is_empty());
 
     setup(initial(false));
+    enable_announcements("total_only");
     Plugin::init().unwrap();
     http::set_replies([Ok(http::Response {
         status: 503,
@@ -410,6 +415,7 @@ fn composed_timeout_is_uncertain_without_optimistic_state_and_rejection_is_an_er
         Some(false)
     );
     assert!(render_text().iter().any(|line| line.contains("rejected")));
+    assert!(speech_stream::calls().opened_rooms.is_empty());
 }
 #[test]
 fn delayed_startup_schedule_is_truthful_for_ack_and_timeout_dispatch() {
@@ -703,7 +709,7 @@ fn invalid_poll_interval_fails_closed_instead_of_defaulting() {
 
 #[test]
 fn announcement_settings_room_speech_lifecycle_and_synthetic_delivery() {
-    setup(initial(false));
+    setup(initial(true));
     config::set("announcements_enabled", config::SettingValue::Boolean(true));
     config::set(
         "announcement_mode",
@@ -744,7 +750,7 @@ fn announcement_settings_room_speech_lifecycle_and_synthetic_delivery() {
             .iter()
             .any(|line| line == "Announcement room: living_room")
     );
-    assert!(lines.iter().any(|line| line == "Speech stream open"));
+    assert!(lines.iter().any(|line| line == "Speech session: open"));
 
     const EMPTY: &str = r#"{"type":"state","data":{"running":true,"numThrows":0,"throws":[]}}"#;
     const DART: &str = r#"{"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"number":20,"multiplier":1}}]}}"#;
@@ -783,7 +789,11 @@ fn announcement_settings_room_speech_lifecycle_and_synthetic_delivery() {
     Plugin::on_timer("poll".into());
     let lines = render_text();
     assert!(lines.iter().any(|line| line.contains("Replaced")));
-    assert!(lines.iter().any(|line| line.contains("Speech stream open")));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("Speech session: open"))
+    );
     assert!(
         lines
             .iter()
@@ -1173,7 +1183,7 @@ fn speech_outcomes_remain_correlated_after_repeated_polls() {
 
 #[test]
 fn speech_poll_errors_preserve_pending_requests_and_recover() {
-    setup(initial(false));
+    setup(initial(true));
     enable_announcements("total_only");
     Plugin::init().unwrap();
     ingest_announcement_json(EMPTY_EVENT.as_bytes());
@@ -1213,7 +1223,7 @@ fn speech_poll_errors_preserve_pending_requests_and_recover() {
 }
 #[test]
 fn speech_submission_error_does_not_hide_pending_count() {
-    setup(initial(false));
+    setup(initial(true));
     enable_announcements("total_only");
     Plugin::init().unwrap();
     ingest_announcement_json(EMPTY_EVENT.as_bytes());
@@ -1249,7 +1259,7 @@ fn speech_submission_error_does_not_hide_pending_count() {
 
 #[test]
 fn open_and_submit_rejections_are_visible_without_fake_terminal_success() {
-    setup(initial(false));
+    setup(initial(true));
     enable_announcements("total_only");
     speech_stream::set_open_error(Some(
         bindings::niles::integration::types::HostError::Unavailable("open".into()),
@@ -1258,9 +1268,9 @@ fn open_and_submit_rejections_are_visible_without_fake_terminal_success() {
     assert!(
         render_text()
             .iter()
-            .any(|line| line.contains("Speech stream open failed"))
+            .any(|line| line.contains("Speech stream reopen failed"))
     );
-    setup(initial(false));
+    setup(initial(true));
     enable_announcements("each_dart_then_total");
     Plugin::init().unwrap();
     speech_stream::set_submit_errors([bindings::niles::integration::types::HostError::Limit(
@@ -1314,6 +1324,300 @@ fn drain_current_speech() {
 }
 
 #[test]
+fn jvl16_render_distinguishes_connection_detection_session_and_baseline() {
+    use bindings::niles::integration::websocket::ConnectionStatus;
+    setup(initial(false));
+    enable_announcements("total_only");
+    Plugin::init().unwrap();
+    websocket::status(41, ConnectionStatus::Connected);
+    let lines = render_text();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Observation connection: connected")
+    );
+    assert!(lines.iter().any(|line| line == "Detection state: stopped"));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("Speech session: closed"))
+    );
+
+    http::set_replies(initial(true));
+    Plugin::on_timer("poll".into());
+    let lines = render_text();
+    assert!(lines.iter().any(|line| line == "Detection state: running"));
+    assert!(lines.iter().any(|line| line == "Speech session: open"));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Policy readiness: awaiting baseline")
+    );
+    send_event(EMPTY_EVENT);
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line == "Policy readiness: collecting (0 darts)")
+    );
+
+    send_event(r#"{"type":"state","data":{"status":"Starting","running":true,"numThrows":0}}"#);
+    let lines = render_text();
+    assert!(lines.iter().any(|line| line == "Detection state: Starting"));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("Speech session: closed"))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Policy readiness: awaiting baseline")
+    );
+    assert!(!lines.iter().any(|line| line == "Speech session: open"));
+
+    // Transport diagnostics are untrusted prose, not connection-state evidence.
+    websocket::status(
+        41,
+        ConnectionStatus::Disconnected("peer disconnected".into()),
+    );
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line == "Observation connection: reconnecting")
+    );
+    websocket::status(41, ConnectionStatus::Disconnected("socket lost".into()));
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line == "Observation connection: reconnecting")
+    );
+}
+
+#[test]
+fn jvl16_stop_revokes_busy_open_retry_and_reconnect_is_not_running() {
+    use bindings::niles::integration::websocket::ConnectionStatus;
+    setup(initial(true));
+    enable_announcements("each_dart_then_total");
+    Plugin::init().unwrap();
+    send_event(EMPTY_EVENT);
+    send_event(ONE_DART);
+    let progress = latest_timer("speech-progress:");
+    let request = speech_stream::calls().submitted_ids[0].1;
+    websocket::status(41, ConnectionStatus::Connected);
+    assert_eq!(speech_stream::calls().closed.len(), 1);
+    poll_speech();
+    assert_eq!(speech_stream::calls().opened_rooms.len(), 1);
+
+    speech_stream::set_open_error(Some(types::HostError::Unavailable("closing".into())));
+    send_event(ONE_DART);
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("speech host unavailable"))
+    );
+    let attempts = speech_stream::calls().opened_rooms.len();
+    send_event(r#"{"type":"state","data":{"running":false,"numThrows":0}}"#);
+    speech_stream::set_open_error(None);
+    set_terminal(request);
+    Plugin::on_timer(progress);
+    send_event(REMOVED);
+    poll_speech();
+    websocket::status(41, ConnectionStatus::Connected);
+    poll_speech();
+    assert_eq!(speech_stream::calls().opened_rooms.len(), attempts);
+    assert_eq!(speech_stream::calls().submitted.len(), 1);
+    assert!(websocket::calls().closed.is_empty());
+
+    http::set_replies(initial(true));
+    Plugin::on_timer("poll".into());
+    send_event(ONE_DART);
+    send_event(REMOVED);
+    assert_eq!(speech_stream::calls().submitted.len(), 1);
+    send_event(EMPTY_EVENT);
+    send_event(ONE_DART);
+    assert_eq!(speech_stream::calls().submitted.len(), 2);
+}
+
+#[test]
+fn jvl16_running_cannot_bypass_disabled_invalid_or_host_denied_room() {
+    for key in ["announcements_enabled", "speech_stream_enabled", "room"] {
+        setup(initial(true));
+        enable_announcements("total_only");
+        Plugin::init().unwrap();
+        send_event(EMPTY_EVENT);
+        send_event(ONE_DART);
+        send_event(TWO_DARTS);
+        send_event(THREE_DARTS);
+        let deadline = latest_timer("total-deadline:");
+        if key == "room" {
+            config::set(key, config::SettingValue::Text("".into()));
+        } else {
+            config::set(key, config::SettingValue::Boolean(false));
+        }
+        http::set_replies(initial(true));
+        let result = Plugin::init();
+        assert_eq!(result.is_err(), key == "room");
+        Plugin::on_timer(deadline);
+        send_event(EMPTY_EVENT);
+        send_event(ONE_DART);
+        send_event(REMOVED);
+        poll_speech();
+        assert_eq!(speech_stream::calls().closed.len(), 1);
+        assert_eq!(speech_stream::calls().opened_rooms, ["living_room"]);
+        assert!(speech_stream::calls().submitted.is_empty());
+        if result.is_ok() {
+            assert!(
+                render_text()
+                    .iter()
+                    .any(|line| line.starts_with("Speech session: closed"))
+            );
+        }
+    }
+
+    setup(initial(true));
+    enable_announcements("total_only");
+    speech_stream::set_open_error(Some(types::HostError::NotPermitted("room".into())));
+    Plugin::init().unwrap();
+    send_event(EMPTY_EVENT);
+    send_event(ONE_DART);
+    send_event(REMOVED);
+    assert!(speech_stream::calls().opened_sessions.is_empty());
+    assert!(speech_stream::calls().submitted.is_empty());
+    let lines = render_text();
+    assert!(lines.iter().any(|line| line.starts_with("Speech session: closed") && line.contains("NotPermitted")));
+}
+
+#[test]
+fn jvl16_http_stop_closes_idle_session_and_repeated_samples_stay_closed() {
+    for accelerated in [false, true] {
+        setup(initial(true));
+        enable_announcements("total_only");
+        Plugin::init().unwrap();
+        let session = speech_stream::calls().opened_sessions[0].0;
+        if accelerated {
+            // Reuse JVL-15's stale-observation command path, not new startup policy.
+            test_host::clock::advance(Duration::from_secs(16));
+            http::set_replies([response("")]);
+            Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).unwrap();
+        }
+        for _ in 0..2 {
+            if accelerated {
+                http::set_replies([response(r#"{"connected":true,"running":false}"#)]);
+                Plugin::on_timer(latest_timer("detection-poll:"));
+            } else {
+                http::set_replies(initial(false));
+                Plugin::on_timer("poll".into());
+            }
+        }
+        assert_eq!(speech_stream::calls().closed, [session]);
+        assert_eq!(speech_stream::calls().opened_rooms, ["living_room"]);
+        assert!(websocket::calls().closed.is_empty());
+        assert!(speech_stream::calls().submitted.is_empty());
+    }
+}
+
+#[test]
+fn jvl16_stopped_idle_session_closes_once_and_observation_survives() {
+    setup(initial(true));
+    enable_announcements("total_only");
+    Plugin::init().unwrap();
+    let session = speech_stream::calls().opened_sessions[0].0;
+    let puts_before = http::requests()
+        .iter()
+        .filter(|request| request.method == http::Method::Put)
+        .count();
+    let stopped = r#"{"type":"state","data":{"connected":true,"running":false,"numThrows":0}}"#;
+    send_event(stopped);
+    send_event(stopped);
+    assert_eq!(speech_stream::calls().closed, [session]);
+    assert_eq!(speech_stream::calls().opened_sessions.len(), 1);
+    assert_eq!(
+        http::requests()
+            .iter()
+            .filter(|request| request.method == http::Method::Put)
+            .count(),
+        puts_before
+    );
+    let lines = render_text();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Observation connection: connecting")
+    );
+    assert!(websocket::calls().closed.is_empty());
+    assert!(
+        lines.iter().any(|line| line
+            .starts_with("Speech session: closed (awaiting confirmed running detection)")),
+        "{lines:?}"
+    );
+    send_event(EMPTY_EVENT);
+    assert_eq!(speech_stream::calls().opened_sessions.len(), 2);
+}
+
+#[test]
+fn jvl16_starting_stays_closed_and_running_reopens_without_old_darts() {
+    setup(initial(true));
+    enable_announcements("total_only");
+    Plugin::init().unwrap();
+    send_event(r#"{"type":"state","data":{"running":false,"numThrows":0}}"#);
+    let opened_after_stop = speech_stream::calls().opened_sessions.len();
+    send_event(r#"{"type":"state","data":{"status":"Starting","running":false,"numThrows":0}}"#);
+    send_event(
+        r#"{"type":"state","data":{"status":"Starting","running":true,"numThrows":1,"throws":[{"segment":{"number":20,"multiplier":1}}]}}"#,
+    );
+    assert_eq!(
+        speech_stream::calls().opened_sessions.len(),
+        opened_after_stop
+    );
+    send_event(
+        r#"{"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"number":20,"multiplier":1}}]}}"#,
+    );
+    assert_eq!(
+        speech_stream::calls().opened_sessions.len(),
+        opened_after_stop + 1
+    );
+    assert!(speech_stream::calls().submitted.is_empty());
+    send_event(EMPTY_EVENT);
+    send_event(ONE_DART);
+    send_event(REMOVED);
+    assert_eq!(speech_stream::calls().submitted, [(8, "20".into())]);
+}
+
+#[test]
+fn jvl16_stop_cancels_pending_commentary_and_old_callbacks() {
+    for mode in ["each_dart_then_total", "total_only"] {
+        setup(initial(true));
+        enable_announcements(mode);
+        Plugin::init().unwrap();
+        send_event(EMPTY_EVENT);
+        send_event(ONE_DART);
+        send_event(TWO_DARTS);
+        send_event(THREE_DARTS);
+        let old_timer = latest_timer("total-deadline:");
+        let calls = speech_stream::calls();
+        let old_request = calls.submitted_ids.first().map(|(_, request, _)| *request);
+        let progress = old_request.map(|_| latest_timer("speech-progress:"));
+        send_event(r#"{"type":"state","data":{"running":false,"numThrows":0}}"#);
+        let cancelled = test_host::niles::integration::timers::cancellations();
+        assert!(cancelled.contains(&old_timer));
+        if let Some(progress) = progress {
+            assert!(cancelled.contains(&progress));
+            Plugin::on_timer(progress);
+        }
+        if let Some(request) = old_request {
+            set_terminal(request);
+            poll_speech();
+        }
+        Plugin::on_timer(old_timer);
+        assert_eq!(speech_stream::calls().closed.len(), 1);
+        assert_eq!(
+            speech_stream::calls().submitted.len(),
+            old_request.is_some() as usize
+        );
+    }
+}
+
+#[test]
 fn stopped_board_discards_pending_speech_and_requires_new_baseline() {
     setup(initial(false));
     enable_announcements("each_dart_then_total");
@@ -1338,7 +1642,7 @@ fn stopped_board_discards_pending_speech_and_requires_new_baseline() {
 
 #[test]
 fn asynchronous_close_can_delay_reopening_without_replaying_speech() {
-    setup(initial(false));
+    setup(initial(true));
     enable_announcements("each_dart_then_total");
     Plugin::init().unwrap();
     send_event(EMPTY_EVENT);
@@ -1352,13 +1656,18 @@ fn asynchronous_close_can_delay_reopening_without_replaying_speech() {
     );
     send_event(REMOVED);
     assert_eq!(speech_stream::calls().submitted.len(), 1);
+    assert!(render_text().iter().any(|line| {
+        line.contains("Speech session: closed (awaiting confirmed running detection)")
+    }));
+    http::set_replies(initial(true));
+    Plugin::on_timer("poll".into());
     assert!(
         render_text()
             .iter()
-            .any(|line| line.contains("reopen failed"))
+            .any(|line| line.contains("Speech stream reopen failed"))
     );
     speech_stream::set_open_error(None);
-    http::set_replies(initial(false));
+    http::set_replies(initial(true));
     Plugin::on_timer("poll".into());
     assert_eq!(speech_stream::calls().opened_sessions.len(), 2);
     assert_eq!(speech_stream::calls().submitted.len(), 1);
@@ -1534,11 +1843,32 @@ fn room_change_retains_discard_evidence_and_ignores_old_results() {
         bindings::niles::integration::websocket::Message::Text(REMOVED.into()),
     );
     assert_eq!(speech_stream::calls().submitted.len(), 1);
+    assert_eq!(speech_stream::calls().opened_rooms, ["living_room"]);
+    for event in [ONE_DART, REMOVED] {
+        websocket::message(
+            42,
+            bindings::niles::integration::websocket::Message::Text(event.into()),
+        );
+    }
+    assert_eq!(
+        speech_stream::calls().opened_rooms,
+        ["living_room", "office"]
+    );
+    assert_eq!(speech_stream::calls().submitted.len(), 1);
+    for event in [EMPTY_EVENT, ONE_DART] {
+        websocket::message(
+            42,
+            bindings::niles::integration::websocket::Message::Text(event.into()),
+        );
+    }
+    let calls = speech_stream::calls();
+    assert_eq!(calls.submitted.len(), 2);
+    assert_eq!(calls.submitted[1].0, calls.opened_sessions[1].0);
 }
 
 #[test]
 fn speech_enablement_without_announcement_intent_does_not_open_a_session() {
-    setup(initial(false));
+    setup(initial(true));
     config::set("speech_stream_enabled", config::SettingValue::Boolean(true));
     Plugin::init().unwrap();
     assert!(speech_stream::calls().opened_rooms.is_empty());
