@@ -1,4 +1,19 @@
 //! Synthetic Niles imports. The exported component uses the production WIT bindings.
+pub mod clock {
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+
+    thread_local! { static NOW: Cell<Instant> = Cell::new(Instant::now()); }
+    pub fn now() -> Instant {
+        NOW.with(Cell::get)
+    }
+    pub fn advance(duration: Duration) {
+        NOW.with(|now| now.set(now.get() + duration));
+    }
+    pub fn reset() {
+        NOW.with(|now| now.set(Instant::now()));
+    }
+}
 pub mod niles {
     pub mod integration {
         pub mod config {
@@ -81,17 +96,22 @@ pub mod niles {
             thread_local! {
                 static REPLIES: RefCell<std::collections::VecDeque<Result<Response, HttpError>>> = RefCell::new(Default::default());
                 static REQUESTS: RefCell<Vec<ObservedRequest>> = const { RefCell::new(Vec::new()) };
+                static ELAPSE_NEXT: RefCell<std::time::Duration> = const { RefCell::new(std::time::Duration::ZERO) };
             }
             pub fn set_replies(replies: impl IntoIterator<Item = Result<Response, HttpError>>) {
                 REPLIES.with(|slot| *slot.borrow_mut() = replies.into_iter().collect());
                 REQUESTS.with(|slot| slot.borrow_mut().clear());
                 FAIL_NEXT.with(|slot| *slot.borrow_mut() = None);
+                ELAPSE_NEXT.with(|slot| *slot.borrow_mut() = std::time::Duration::ZERO);
             }
             pub fn append_replies(replies: impl IntoIterator<Item = Result<Response, HttpError>>) {
                 REPLIES.with(|slot| slot.borrow_mut().extend(replies));
             }
             pub fn requests() -> Vec<ObservedRequest> {
                 REQUESTS.with(|slot| slot.borrow().clone())
+            }
+            pub fn elapse_next(duration: std::time::Duration) {
+                ELAPSE_NEXT.with(|slot| *slot.borrow_mut() = duration);
             }
             pub fn send(request: &Request) -> Result<Response, HttpError> {
                 REQUESTS.with(|slot| {
@@ -102,6 +122,7 @@ pub mod niles {
                         body: request.body.clone(),
                     })
                 });
+                ELAPSE_NEXT.with(|slot| crate::test_host::clock::advance(slot.take()));
                 if let Some(error) = FAIL_NEXT.with(|slot| slot.borrow_mut().take()) {
                     return Err(error);
                 }

@@ -23,7 +23,6 @@ pub enum DetectionResult {
         observed: Option<bool>,
         dispatch: DetectionDispatch,
     },
-    Failed(&'static str),
 }
 
 pub trait CommandTransport: Transport {
@@ -63,10 +62,13 @@ pub fn detection_result(
             running,
             status,
             event,
+            connected,
             ..
         } => (
             *running,
-            status.as_deref() == Some("Starting") || event.as_deref() == Some("Starting"),
+            connected == &Some(false)
+                || status.as_deref() == Some("Starting")
+                || event.as_deref() == Some("Starting"),
         ),
         BoardState::Unknown => (None, false),
     };
@@ -79,27 +81,6 @@ pub fn detection_result(
             dispatch,
         }
     }
-}
-
-/// Compatibility helper for deterministic callers that need a command followed by one
-/// independent state read. The component uses `dispatch_detection` and reconciles later.
-pub fn set_detection<T: CommandTransport>(
-    config: &Config,
-    transport: &mut T,
-    command: DetectionCommand,
-) -> (DetectionResult, Snapshot) {
-    let desired = command == DetectionCommand::Start;
-    let dispatch = match dispatch_detection(config, transport, command) {
-        Ok(dispatch) => dispatch,
-        Err(reason) => {
-            return (
-                DetectionResult::Failed(reason),
-                Snapshot::unknown("command".into(), reason.into(), None),
-            );
-        }
-    };
-    let snapshot = poll_state(config, transport);
-    (detection_result(desired, dispatch, &snapshot), snapshot)
 }
 
 pub fn poll_state<T: Transport>(config: &Config, transport: &mut T) -> Snapshot {
@@ -299,23 +280,5 @@ mod tests {
         );
         assert_eq!(snapshot.availability, Availability::Available);
         assert_eq!(snapshot.state, BoardState::Unknown);
-    }
-
-    #[test]
-    fn legacy_snapshot_cannot_be_used_to_claim_a_transition() {
-        let stale = Snapshot {
-            availability: Availability::Available,
-            version: Some("1".into()),
-            state: BoardState::Observed {
-                connected: Some(true),
-                running: Some(true),
-                status: None,
-                event: None,
-                num_throws: None,
-            },
-            diagnostic: None,
-        };
-        let mut fixture = Fixture::new(Ok(200), state(false));
-        assert_ne!(stale.state, poll_state(&config(), &mut fixture).state);
     }
 }

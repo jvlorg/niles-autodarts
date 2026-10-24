@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::{AnnouncementDelivery, AnnouncementMode, AnnouncementRequest, DeliveryError};
 
 const MAX_DARTS: usize = 3;
-const MAX_ENVELOPE_BYTES: usize = 64 * 1024;
+pub const MAX_ENVELOPE_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalState {

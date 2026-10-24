@@ -1,10 +1,11 @@
 use futures_util::SinkExt;
-use niles_core::{DeviceRegistry, DeviceState, EventBus, RoomName};
-use niles_mqtt::DeviceCommander;
+use niles_core::{DeviceRegistry, EventBus, RoomName};
+use niles_mqtt::CommandRouter;
 use niles_plugins::speech_stream::{
     SessionSpeechHost, SpeechError, SpeechOutcome, SpeechStreamHost,
 };
 use niles_plugins::{Context, House, Limits, MemoryStore, Runtime};
+use niles_tools::{SetDevice, builtin::Publisher, tool::Tool};
 use niles_tts::speech_session::{
     Eligibility, PluginOwner, SpeechEligibility, SpeechOutput, SpeechSessionManager, TerminalResult,
 };
@@ -12,7 +13,7 @@ use parking_lot::Mutex;
 use std::collections::BTreeMap;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -338,6 +339,8 @@ impl SpeechStreamHost for ObservedHost {
 struct Board {
     task: JoinHandle<()>,
     connections: mpsc::UnboundedReceiver<Socket>,
+    acknowledge_start: Arc<AtomicBool>,
+    starts: Arc<AtomicUsize>,
 }
 
 impl Board {
@@ -348,6 +351,10 @@ impl Board {
         let (connections, rx) = mpsc::unbounded_channel();
         let running = Arc::new(AtomicBool::new(initial_running));
         let board_running = Arc::clone(&running);
+        let acknowledge_start = Arc::new(AtomicBool::new(false));
+        let board_acknowledge = Arc::clone(&acknowledge_start);
+        let starts = Arc::new(AtomicUsize::new(0));
+        let board_starts = Arc::clone(&starts);
         let task = tokio::spawn(async move {
             let mut children = JoinSet::new();
             loop {
@@ -356,6 +363,8 @@ impl Board {
                         let (mut stream, _) = accepted.unwrap();
                         let connections = connections.clone();
                         let board_running = Arc::clone(&board_running);
+                        let acknowledge = Arc::clone(&board_acknowledge);
+                        let starts = Arc::clone(&board_starts);
                         children.spawn(async move {
                             let mut peek = [0u8; 1024];
                             let count = tokio::time::timeout(WAIT, async {
@@ -381,6 +390,14 @@ impl Board {
                             }
                             stream.read_exact(&mut peek[..count]).await.unwrap();
                             let (status, body) = if peek[..count].starts_with(b"PUT /api/start ") {
+                                starts.fetch_add(1, Ordering::SeqCst);
+                                if acknowledge.load(Ordering::SeqCst) {
+                                    stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+                                    stream.shutdown().await.unwrap();
+                                    tokio::time::sleep(Duration::from_secs(3)).await;
+                                    board_running.store(true, Ordering::SeqCst);
+                                    return;
+                                }
                                 tokio::time::sleep(Duration::from_secs(3)).await;
                                 board_running.store(true, Ordering::SeqCst);
                                 ("204 No Content", String::new())
@@ -413,6 +430,8 @@ impl Board {
         Self {
             task,
             connections: rx,
+            acknowledge_start,
+            starts,
         }
     }
 
@@ -1051,8 +1070,27 @@ async fn compiled_component_uses_real_niles_speech_scheduler() {
     )
     .await;
 }
+struct NoMqtt;
+
+#[async_trait::async_trait]
+impl Publisher for NoMqtt {
+    async fn publish(&self, _: &str, _: Vec<u8>) -> niles_mqtt::Result<()> {
+        panic!("a component device command must not fall through to MQTT");
+    }
+}
+
 async fn compiled_detection_command_crosses_response_deadline() {
+    for acknowledge in [true, false] {
+        compiled_detection_command_outcome(acknowledge).await;
+    }
+}
+
+async fn compiled_detection_command_outcome(acknowledge: bool) {
     let (proof, mut socket) = Proof::start_with_initial("total_only", false).await;
+    proof
+        .board
+        .acknowledge_start
+        .store(acknowledge, Ordering::SeqCst);
     let id = tokio::time::timeout(WAIT, async {
         loop {
             if let Some(device) = proof
@@ -1069,21 +1107,29 @@ async fn compiled_detection_command_crosses_response_deadline() {
     .await
     .expect("component registers the controllable board");
     println!("compiled device id: {id}");
-    let start = DeviceState {
-        on: Some(true),
-        ..DeviceState::default()
-    };
-    let result = proof.runtime.command(&id, &start).await;
+    let tool = SetDevice::new(
+        Arc::clone(&proof.registry),
+        NoMqtt,
+        Arc::new(CommandRouter::z2m_only("unused").with_commander(Arc::new(proof.runtime.clone()))),
+        false,
+    );
+    let start = serde_json::json!({"device_id": id.to_string(), "on": true});
+    let result = tool
+        .execute(start.clone())
+        .await
+        .expect("handled pending command");
     let before = proof.registry.get(&id).expect("reported device").state.on;
     println!(
-        "detection pending result: {}",
-        serde_json::json!({"result": if result.is_ok() { "ok" } else { "error" }, "reported_on": before})
+        "detection pending model result (acknowledge={acknowledge}): {result}; reported_on={before:?}"
     );
-    assert!(
-        result.is_ok(),
-        "timeout must be accepted for monitoring: {result:?}"
+    assert_eq!(
+        result,
+        serde_json::json!({"ok": true, "device": id.to_string()})
     );
     assert_eq!(before, Some(false));
+    let duplicate = tool.execute(start.clone()).await.unwrap();
+    assert_eq!(duplicate, result);
+    assert_eq!(proof.board.starts.load(Ordering::SeqCst), 1);
 
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
@@ -1100,20 +1146,17 @@ async fn compiled_detection_command_crosses_response_deadline() {
     .await
     .expect("delayed board startup reaches the component's later readback");
     let after = proof.registry.get(&id).expect("reported device").state.on;
-    println!(
-        "detection observed result: {}",
-        serde_json::json!({"result": "ok", "reported_on": after})
-    );
+    let confirmed = tool.execute(start).await.unwrap();
+    println!("detection observed model result: {confirmed}; reported_on={after:?}");
+    assert_eq!(proof.board.starts.load(Ordering::SeqCst), 1);
     assert_eq!(after, Some(true));
 
-    let stop = DeviceState {
-        on: Some(false),
-        ..DeviceState::default()
-    };
-    let rejection = proof.runtime.command(&id, &stop).await;
+    let rejection = tool
+        .execute(serde_json::json!({"device_id": id.to_string(), "on": false}))
+        .await;
     println!(
-        "detection rejection result: {}",
-        serde_json::json!({"result": "error", "error": rejection.as_ref().err()})
+        "detection rejection tool error: {}",
+        rejection.as_ref().unwrap_err()
     );
     assert!(rejection.is_err());
     assert_eq!(

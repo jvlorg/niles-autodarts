@@ -24,6 +24,7 @@ fn setup(replies: impl IntoIterator<Item = Result<http::Response, http::HttpErro
     speech_stream::reset();
     websocket::reset();
     test_host::niles::integration::timers::reset();
+    test_host::clock::reset();
     config::set(
         "address",
         config::SettingValue::Text("board.local:3180".into()),
@@ -47,6 +48,225 @@ fn desired(on: Option<bool>) -> WitDeviceState {
         position: None,
         readings: vec![],
     }
+}
+
+#[test]
+fn expired_start_does_not_retry_using_an_observation_before_starting() {
+    setup(initial(false));
+    Plugin::init().unwrap();
+    http::set_replies([response("")]);
+    Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).unwrap();
+    for body in [
+        r#"{"running":false}"#,
+        r#"{"status":"Starting","running":false}"#,
+    ] {
+        http::append_replies([response(body)]);
+        Plugin::on_timer(latest_timer("detection-poll:"));
+    }
+    test_host::clock::advance(std::time::Duration::from_secs(30));
+    Plugin::on_timer(latest_timer("detection-expiry:"));
+    http::append_replies([response("")]);
+    let requests = http::requests().len();
+    Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).unwrap();
+    assert_eq!(
+        http::requests().len(),
+        requests,
+        "Starting must retain the duplicate latch"
+    );
+}
+
+#[test]
+fn delayed_poll_delivery_cannot_extend_detection_monitoring() {
+    setup(initial(false));
+    Plugin::init().unwrap();
+    http::set_replies([response("")]);
+    Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).unwrap();
+    let timer = latest_timer("detection-poll:");
+    let requests = http::requests().len();
+    test_host::clock::advance(std::time::Duration::from_secs(31));
+    http::append_replies([response(r#"{"running":false}"#)]);
+    Plugin::on_timer(timer);
+    assert_eq!(
+        http::requests().len(),
+        requests,
+        "expired polling must not issue HTTP"
+    );
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("monitoring expired"))
+    );
+}
+
+#[test]
+fn disconnected_and_contradictory_readbacks_cannot_confirm_detection() {
+    for (initial_on, body) in [
+        (false, r#"{"connected":false,"running":true}"#),
+        (true, r#"{"status":"Starting","running":true}"#),
+    ] {
+        setup(initial(initial_on));
+        Plugin::init().unwrap();
+        http::set_replies([response("")]);
+        Plugin::set_device("living_room/dartboard".into(), desired(Some(!initial_on))).unwrap();
+        http::append_replies([response(body)]);
+        Plugin::on_timer(latest_timer("detection-poll:"));
+        assert_eq!(
+            devices::calls().upserts.last().unwrap().state.on,
+            Some(initial_on)
+        );
+        assert!(
+            !render_text()
+                .iter()
+                .any(|line| line.contains("Detection command: running confirmed")
+                    || line.contains("Detection command: stopped confirmed"))
+        );
+    }
+}
+
+#[test]
+fn invalid_event_cannot_publish_running_before_ingress_validation() {
+    setup(initial(false));
+    enable_announcements("total_only");
+    Plugin::init().unwrap();
+    send_event(r#"{"type":"state","data":{"running":true,"numThrows":4,"throws":[]}}"#);
+    assert_eq!(
+        devices::calls().upserts.last().unwrap().state.on,
+        Some(false)
+    );
+}
+
+#[test]
+fn timer_failure_does_not_call_uncertain_dispatch_accepted() {
+    setup(initial(false));
+    Plugin::init().unwrap();
+    test_host::niles::integration::timers::fail_after(true);
+    http::fail_next(http::HttpError::Timeout);
+    Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).unwrap();
+    let lines = render_text();
+    assert!(lines.iter().any(|line| line.contains("dispatch uncertain")));
+    assert!(!lines.iter().any(|line| line.contains("startup accepted")));
+}
+
+#[test]
+fn complete_large_rejection_response_is_not_hidden_as_dispatch_uncertainty() {
+    setup(initial(false));
+    Plugin::init().unwrap();
+    http::set_replies([Ok(http::Response {
+        status: 503,
+        headers: vec![],
+        body: vec![b'x'; autodarts_core::MAX_RESPONSE_BYTES + 1],
+    })]);
+    let result = Plugin::set_device("living_room/dartboard".into(), desired(Some(true)));
+    assert!(result.unwrap_err().contains("command_http_status"));
+    assert_eq!(
+        devices::calls().upserts.last().unwrap().state.on,
+        Some(false)
+    );
+}
+
+#[test]
+fn readback_crossing_deadline_does_not_rearm_monitoring() {
+    setup(initial(false));
+    Plugin::init().unwrap();
+    http::set_replies([response("")]);
+    Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).unwrap();
+    let timer = latest_timer("detection-poll:");
+    test_host::clock::advance(Duration::from_secs(29));
+    http::elapse_next(Duration::from_secs(2));
+    http::append_replies([response(r#"{"status":"Starting","running":false}"#)]);
+    Plugin::on_timer(timer.clone());
+    let requests = http::requests().len();
+    Plugin::on_timer(timer);
+    Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).unwrap();
+    assert_eq!(http::requests().len(), requests);
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("monitoring expired"))
+    );
+}
+
+#[test]
+fn persistent_false_expires_and_requires_a_new_post_expiry_observation() {
+    setup(initial(false));
+    Plugin::init().unwrap();
+    http::set_replies([response("")]);
+    Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).unwrap();
+    for _ in 0..29 {
+        test_host::clock::advance(Duration::from_secs(1));
+        http::append_replies([response(r#"{"running":false}"#)]);
+        Plugin::on_timer(latest_timer("detection-poll:"));
+    }
+    test_host::clock::advance(Duration::from_secs(1));
+    Plugin::on_timer(latest_timer("detection-expiry:"));
+    let requests = http::requests().len();
+    Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).unwrap();
+    assert_eq!(http::requests().len(), requests);
+    http::append_replies(initial(false));
+    Plugin::on_timer("poll".into());
+    http::append_replies([response("")]);
+    Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).unwrap();
+    assert_eq!(
+        http::requests()
+            .iter()
+            .filter(|request| request.method == http::Method::Put)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn stop_supersedes_start_and_stale_callbacks_do_not_mutate_new_operations() {
+    setup(initial(false));
+    Plugin::init().unwrap();
+    http::set_replies([response(""), response("")]);
+    Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).unwrap();
+    let old_poll = latest_timer("detection-poll:");
+    let old_expiry = latest_timer("detection-expiry:");
+    Plugin::set_device("living_room/dartboard".into(), desired(Some(false))).unwrap();
+    let stop_poll = latest_timer("detection-poll:");
+    Plugin::on_timer(old_poll.clone());
+    Plugin::on_timer(old_expiry);
+    Plugin::set_device("living_room/dartboard".into(), desired(Some(false))).unwrap();
+    assert_eq!(http::requests().len(), 2);
+    assert!(http::requests()[1].url.ends_with("/api/stop"));
+    http::append_replies([response(r#"{"running":true}"#)]);
+    Plugin::on_timer(stop_poll.clone());
+    assert_eq!(
+        devices::calls().upserts.last().unwrap().state.on,
+        Some(true)
+    );
+    http::append_replies(initial(false));
+    config::set("room", config::SettingValue::Text("office".into()));
+    Plugin::init().unwrap();
+    let count = http::requests().len();
+    Plugin::on_timer(old_poll);
+    Plugin::on_timer(stop_poll);
+    assert_eq!(http::requests().len(), count);
+    assert_eq!(
+        devices::calls().upserts.last().unwrap().state.on,
+        Some(false)
+    );
+}
+
+#[test]
+fn only_current_available_running_observation_avoids_dispatch() {
+    setup(initial(true));
+    Plugin::init().unwrap();
+    http::set_replies([]);
+    Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).unwrap();
+    assert!(http::requests().is_empty());
+    http::append_replies([response("fixture-version"), Err(http::HttpError::Timeout)]);
+    Plugin::on_timer("poll".into());
+    http::append_replies([response("")]);
+    Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).unwrap();
+    assert_eq!(
+        http::requests()
+            .iter()
+            .filter(|request| request.method == http::Method::Put)
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -197,7 +417,6 @@ fn delayed_startup_schedule_is_truthful_for_ack_and_timeout_dispatch() {
         "../../crates/autodarts-core/tests/fixtures/board-manager-jvl15-startup-synthetic-scenarios.json"
     ))
     .unwrap();
-    assert_eq!(schedule["reported_delay_seconds"], 15.575831);
     let scenarios = schedule["scenarios"].as_array().unwrap();
     for dispatch in ["http_2xx", "response_timeout"] {
         let scenario = scenarios
@@ -206,6 +425,7 @@ fn delayed_startup_schedule_is_truthful_for_ack_and_timeout_dispatch() {
             .unwrap();
         let events = scenario["events"].as_array().unwrap();
         setup(initial(false));
+        enable_announcements("total_only");
         Plugin::init().unwrap();
         if dispatch == "http_2xx" {
             http::set_replies([Ok(http::Response {
@@ -222,42 +442,35 @@ fn delayed_startup_schedule_is_truthful_for_ack_and_timeout_dispatch() {
         assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_ok());
         assert_eq!(http::requests().len(), requests_after_dispatch);
 
-        let mut elapsed_polls = 0usize;
-        let mut previous_body = None;
-        for (event_index, event) in events.iter().enumerate() {
-            let target_poll = event["at_seconds"].as_f64().unwrap().ceil() as usize;
-            let body = serde_json::to_string(&event["data"]).unwrap();
-            let final_event = event_index + 1 == events.len();
-            if target_poll == 0 {
-                http::append_replies([response(&body)]);
-                Plugin::on_timer(latest_timer("detection-poll:"));
-                elapsed_polls = 0;
-            } else {
-                while elapsed_polls < target_poll {
-                    let poll_body = if elapsed_polls + 1 == target_poll {
-                        &body
-                    } else {
-                        previous_body.as_ref().unwrap()
-                    };
-                    http::append_replies([response(poll_body)]);
-                    Plugin::on_timer(latest_timer("detection-poll:"));
-                    elapsed_polls += 1;
-                    if !final_event {
-                        assert_eq!(
-                            devices::calls().upserts.last().unwrap().state.on,
-                            Some(false)
-                        );
-                    }
-                }
-            }
-            previous_body = Some(body);
-            if final_event {
-                assert_eq!(
-                    devices::calls().upserts.last().unwrap().state.on,
-                    Some(true)
-                );
-            }
+        let starting = serde_json::to_string(&events[0]).unwrap();
+        send_event(&starting);
+        let starting_body = serde_json::to_string(&events[0]["data"]).unwrap();
+        let started_at = Duration::from_secs_f64(events[1]["at_seconds"].as_f64().unwrap());
+        for _ in 0..started_at.as_secs() {
+            test_host::clock::advance(Duration::from_secs(1));
+            http::append_replies([response(&starting_body)]);
+            let before = http::requests().len();
+            Plugin::on_timer(latest_timer("detection-poll:"));
+            assert_eq!(http::requests().len(), before + 1);
+            Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).unwrap();
+            assert_eq!(
+                http::requests().len(),
+                before + 1,
+                "duplicate must not dispatch"
+            );
         }
+        assert!(
+            devices::calls()
+                .upserts
+                .iter()
+                .all(|device| device.state.on == Some(false))
+        );
+        test_host::clock::advance(started_at - Duration::from_secs(started_at.as_secs()));
+        send_event(&serde_json::to_string(&events[1]).unwrap());
+        assert_eq!(
+            devices::calls().upserts.last().unwrap().state.on,
+            Some(true)
+        );
         assert!(
             render_text()
                 .iter()
@@ -296,6 +509,7 @@ fn expired_startup_suppresses_duplicates_until_fresh_readback_and_accepts_late_c
     assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_ok());
     let before_expiry = http::requests().len();
     let expiry = latest_timer("detection-expiry:");
+    test_host::clock::advance(Duration::from_secs(30));
     Plugin::on_timer(expiry);
     assert!(
         render_text()

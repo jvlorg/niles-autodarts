@@ -12,6 +12,8 @@ niles-mqtt = { path = "../../.cache/niles/crates/niles-mqtt" }
 niles-plugins = { path = "../../.cache/niles/crates/niles-plugins" }
 niles-scheduler = { path = "../../.cache/niles/crates/niles-scheduler" }
 niles-tts = { path = "../../.cache/niles/crates/niles-tts" }
+niles-tools = { path = "../../.cache/niles/crates/niles-tools" }
+async-trait = "0.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "net", "sync"] }
 tokio-tungstenite = "0.30"
 futures-util = "0.3"
