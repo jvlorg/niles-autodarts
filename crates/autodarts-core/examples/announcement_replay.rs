@@ -20,14 +20,18 @@ fn run(
     session.ingest_json(json.as_bytes(), delivery)
 }
 
-fn replay_mode(mode: AnnouncementMode) -> RecordingDelivery {
+fn replay_session(mode: AnnouncementMode) -> (&'static str, AnnouncementSession) {
     let mode_name = match mode {
         AnnouncementMode::EachDartThenTotal => "each_dart_then_total",
         AnnouncementMode::TotalOnly => "total_only",
     };
     let settings = AnnouncementSettings::new(true, Some(mode_name), "living_room")
         .expect("valid replay settings");
-    let mut session = AnnouncementSession::new(settings);
+    (mode_name, AnnouncementSession::new(settings))
+}
+
+fn replay_mode(mode: AnnouncementMode) -> RecordingDelivery {
+    let (mode_name, mut session) = replay_session(mode);
     let mut delivery = RecordingDelivery::default();
     for collection in 1..=3 {
         assert_eq!(
@@ -67,13 +71,7 @@ fn replay_mode(mode: AnnouncementMode) -> RecordingDelivery {
 }
 
 fn replay_capture_with_synthetic_continuation(mode: AnnouncementMode) -> RecordingDelivery {
-    let mode_name = match mode {
-        AnnouncementMode::EachDartThenTotal => "each_dart_then_total",
-        AnnouncementMode::TotalOnly => "total_only",
-    };
-    let settings = AnnouncementSettings::new(true, Some(mode_name), "living_room")
-        .expect("valid replay settings");
-    let mut session = AnnouncementSession::new(settings);
+    let (mode_name, mut session) = replay_session(mode);
     let mut delivery = RecordingDelivery::default();
     let capture: serde_json::Value = serde_json::from_slice(include_bytes!(
         "../tests/fixtures/board-manager-1.0.7-reduced-capture.json"

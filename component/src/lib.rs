@@ -352,12 +352,10 @@ fn ingest_announcement_json(json: &[u8]) -> autodarts_core::local_score::Journey
             .announcement_session
             .ingest_json(json, &mut delivery);
         let policy_event = runtime.announcement_session.diagnostics().last_event;
+        runtime.policy_event = policy_event;
         if result == autodarts_core::local_score::JourneyResult::Invalid {
-            runtime.policy_event = policy_event;
             invalidate_speech(runtime, "invalid Board event");
             reopen_speech(runtime);
-        } else {
-            runtime.policy_event = policy_event;
         }
         result
     })
