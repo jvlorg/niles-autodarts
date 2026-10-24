@@ -162,6 +162,9 @@ pub fn parse_envelope(value: &Value) -> Result<LocalEvent, &'static str> {
         .get("type")
         .and_then(Value::as_str)
         .ok_or("missing event type")?;
+    if !matches!(kind, "state" | "motion_state") {
+        return Ok(LocalEvent::Unknown);
+    }
     let data = value.get("data").ok_or("missing event data")?;
     match kind {
         "state" => parse_state(data).map(LocalEvent::State),
@@ -174,7 +177,7 @@ pub fn parse_envelope(value: &Value) -> Result<LocalEvent, &'static str> {
                 takeout_full: optional_bool(data, "isTakeoutFull")?,
             })
         }
-        _ => Ok(LocalEvent::Unknown),
+        _ => unreachable!("known event type checked above"),
     }
 }
 
@@ -299,24 +302,43 @@ impl LocalJourney {
             LocalEvent::Motion { .. } => JourneyResult::Suppressed,
             LocalEvent::State(state) => self.state(state, mode, room, delivery),
         };
-        let reason = match result {
-            JourneyResult::Baseline => AnnouncementReason::BaselineEstablished,
-            JourneyResult::Dart(_) => AnnouncementReason::DartAccepted,
-            JourneyResult::Total(_) => AnnouncementReason::TotalAccepted,
-            JourneyResult::Invalid => AnnouncementReason::InvalidInput,
-            JourneyResult::DeliveryFailed(_) => AnnouncementReason::DeliveryFailure,
-            JourneyResult::Suppressed => initial_reason,
-        };
-        let disposition = match result {
-            JourneyResult::Baseline | JourneyResult::Dart(_) | JourneyResult::Total(_) => {
-                AnnouncementDisposition::Processed
+        let (reason, disposition) = match result {
+            JourneyResult::Baseline
+                if matches!(
+                    self.diagnostics().readiness,
+                    AnnouncementReadiness::Collecting { dart_count: 0 }
+                ) =>
+            {
+                (
+                    AnnouncementReason::BaselineEstablished,
+                    AnnouncementDisposition::Processed,
+                )
             }
-            JourneyResult::Invalid => AnnouncementDisposition::Invalid,
-            JourneyResult::Suppressed if initial_reason == AnnouncementReason::UnrelatedTopic => {
-                AnnouncementDisposition::Ignored
-            }
-            JourneyResult::Suppressed => AnnouncementDisposition::Suppressed,
-            JourneyResult::DeliveryFailed(_) => AnnouncementDisposition::Processed,
+            JourneyResult::Baseline => (
+                AnnouncementReason::StateSuppressed,
+                AnnouncementDisposition::Suppressed,
+            ),
+            JourneyResult::Dart(_) => (
+                AnnouncementReason::DartAccepted,
+                AnnouncementDisposition::Processed,
+            ),
+            JourneyResult::Total(_) => (
+                AnnouncementReason::TotalAccepted,
+                AnnouncementDisposition::Processed,
+            ),
+            JourneyResult::Invalid => (
+                AnnouncementReason::InvalidInput,
+                AnnouncementDisposition::Invalid,
+            ),
+            JourneyResult::DeliveryFailed(_) => (
+                AnnouncementReason::DeliveryFailure,
+                AnnouncementDisposition::Processed,
+            ),
+            JourneyResult::Suppressed if initial_reason == AnnouncementReason::UnrelatedTopic => (
+                AnnouncementReason::UnrelatedTopic,
+                AnnouncementDisposition::Ignored,
+            ),
+            JourneyResult::Suppressed => (initial_reason, AnnouncementDisposition::Suppressed),
         };
         self.last_event = Some(AnnouncementEvent {
             disposition,
@@ -324,6 +346,7 @@ impl LocalJourney {
         });
         result
     }
+
     fn state<D: AnnouncementDelivery>(
         &mut self,
         state: LocalState,
@@ -936,6 +959,33 @@ mod tests {
         );
     }
     #[test]
+    fn startup_nonempty_state_is_suppressed_until_clean_baseline() {
+        let mut j = LocalJourney::default();
+        let mut d = RecordingDelivery::default();
+        assert_eq!(
+            j.ingest(
+                true,
+                AnnouncementMode::EachDartThenTotal,
+                ROOM,
+                state(&[3, 7, 7]),
+                &mut d,
+            ),
+            JourneyResult::Baseline
+        );
+        assert_eq!(
+            j.diagnostics(),
+            AnnouncementDiagnostics {
+                readiness: AnnouncementReadiness::AwaitingBaseline,
+                last_event: Some(AnnouncementEvent {
+                    disposition: AnnouncementDisposition::Suppressed,
+                    reason: AnnouncementReason::StateSuppressed,
+                }),
+            }
+        );
+        assert!(d.requests.is_empty());
+    }
+
+    #[test]
     fn parser_rejects_unknown_counts_and_contradictory_empty_shapes() {
         for value in [
             json!({"numThrows": null, "throws": []}),
@@ -951,7 +1001,15 @@ mod tests {
             );
         }
         assert_eq!(
+            parse_json(br#"{"type":"camera_status","data":{"anything":true}}"#).unwrap(),
+            LocalEvent::Unknown
+        );
+        assert_eq!(
             parse_json(br#"{"type":"camera_status","data":{"numThrows":"bad"}}"#).unwrap(),
+            LocalEvent::Unknown
+        );
+        assert_eq!(
+            parse_json(br#"{"type":"camera_status"}"#).unwrap(),
             LocalEvent::Unknown
         );
     }

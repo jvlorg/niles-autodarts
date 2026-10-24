@@ -390,7 +390,19 @@ fn reduced_capture_uses_actual_callback_and_keeps_following_rounds_eligible() {
         "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-reduced-capture.json"
     ))
     .unwrap();
-    for envelope in capture.as_array().unwrap() {
+    let envelopes = capture.as_array().unwrap();
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text(
+            serde_json::to_string(&envelopes[0]).unwrap(),
+        ),
+    );
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line == "Last policy event: Suppressed (StateSuppressed)")
+    );
+    for envelope in &envelopes[1..] {
         websocket::message(
             41,
             bindings::niles::integration::websocket::Message::Text(
