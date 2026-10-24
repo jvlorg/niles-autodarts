@@ -36,13 +36,13 @@ Synthetic eligibility and recording output do not establish installed-host compa
 
 The supplied reduced real capture is replayed as an ordered 14-envelope array through core JSON ingress, fake-WIT component callbacks, and the compiled pinned-host proof. It stays silent through the initial nonempty 3/7/7 collection; the captured zero-count state with omitted `throws` establishes `Collecting (0 darts)`. The separate synthetic continuation then produces three successive collections: `3,7,7,17` repeated three times in Each dart → Total and `17` repeated three times in Total only. No synthetic baseline is inserted into the real capture.
 
-The complete `bash scripts/verify.sh` chain passed on source head `f19753643dd936376a6659ce24b9168ec2f2a60e` and was pushed to PR #9 before the documentation-only evidence update. It included:
+The complete `bash scripts/verify.sh` chain passed on source head `f19753643dd936376a6659ce24b9168ec2f2a60e` and was pushed to PR #9 before the documentation-only evidence update. A later full-chain run was recorded for source head `59c33093751c54256c0badc874ad8c89dd0d42a1` in the PR description. The original verification included:
 
 - 35 core tests, 26 component tests, 1 compiled pinned-host proof test, 8 maintained probe tests, 9 release-safety tests, and 0 failing doc-tests.
 - Formatting, workspace build, strict workspace Clippy, release Wasm build, maintained replay, pinned host preparation at `4f3c0a10b2accd022354a23b9f961b222c27eb56`, exact WIT comparison, host-proof formatting/strict Clippy, exact package verification, and actionlint.
 - `sha256sum --check SHA256SUMS` passed for the packaged alpha.2 candidate.
 
-The verified package recorded these SHA-256 values:
+The package verified by the `f19753643dd936376a6659ce24b9168ec2f2a60e` run recorded these SHA-256 values:
 
 | Candidate asset | SHA-256 |
 |---|---|
@@ -51,4 +51,4 @@ The verified package recorded these SHA-256 values:
 | `provenance.json` | `9bcf94721e7dbe344e3efa4a816df29ac0e2c9aa83f34ae32a7d82bd26cc13ac` |
 | `SHA256SUMS` | `a8c3171a815b126c812faa108a381976fdc9f57c75f1c27e04ff9ca8fdc0a669` |
 
-The final documentation-only commit requires the same maintained chain to be rerun on the resulting PR head; that final head and its matching verification result belong in the PR description and acceptance report. This evidence remains offline policy, compiled ingress, and Niles scheduler proof. It does not establish installed-host compatibility, live event ordering or miss encoding, household routing, or audible playback. No live-device writes, installation, deployment, release publication, or audible retest occurred.
+The current PR head `67675bf1a71477611bb22f614a3730df35bfe55b` adds a capture-fidelity regression assertion after those full-chain runs. Its scoped formatting, strict Clippy, and `cargo test -p autodarts-core` checks passed; the complete maintained chain must be rerun for this head before final acceptance. This evidence remains offline policy, compiled ingress, and Niles scheduler proof. It does not establish installed-host compatibility, live event ordering or miss encoding, household routing, or audible playback. No live-device writes, installation, deployment, release publication, or audible retest occurred.
