@@ -8,7 +8,7 @@ pub mod detection;
 pub mod local_score;
 pub use local_score::{
     AnnouncementDiagnostics, AnnouncementDisposition, AnnouncementEvent, AnnouncementReadiness,
-    AnnouncementReason,
+    AnnouncementReason, RoundToken, TakeoutEvidence,
 };
 
 pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;

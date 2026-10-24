@@ -1,6 +1,6 @@
 use crate::local_score::{
     AnnouncementDiagnostics, AnnouncementReadiness, JourneyResult, LocalEvent, LocalJourney,
-    parse_json,
+    RoundToken, parse_json,
 };
 use crate::{AnnouncementDelivery, AnnouncementSettings};
 
@@ -62,6 +62,25 @@ impl AnnouncementSession {
             event,
             delivery,
         )
+    }
+    pub fn pending_total_deadline(&self) -> Option<RoundToken> {
+        self.journey.pending_total_deadline()
+    }
+
+    /// Deliver the one-shot total deadline through the same reducer path as takeout.
+    pub fn on_total_deadline<D: AnnouncementDelivery>(
+        &mut self,
+        token: RoundToken,
+        delivery: &mut D,
+    ) -> JourneyResult {
+        let Some(mode) = self.settings.mode else {
+            return JourneyResult::Suppressed;
+        };
+        if !self.settings.enabled {
+            return JourneyResult::Suppressed;
+        }
+        self.journey
+            .on_total_deadline(token, mode, &self.settings.room, delivery)
     }
 }
 
@@ -534,5 +553,30 @@ mod tests {
                 expected
             );
         }
+    }
+    #[test]
+    fn deadline_token_is_exposed_and_expiry_shares_total_path() {
+        let mut session = AnnouncementSession::new(settings(true, "total_only", "living_room"));
+        let mut delivery = RecordingDelivery::default();
+        session.ingest_json(EMPTY.as_bytes(), &mut delivery);
+        session.ingest_json(DART.as_bytes(), &mut delivery);
+        let dart_two = r#"{"type":"state","data":{"running":true,"numThrows":2,"throws":[{"segment":{"number":20,"multiplier":1}},{"segment":{"number":5,"multiplier":1}}]}}"#;
+        let dart_three = r#"{"type":"state","data":{"running":true,"numThrows":3,"throws":[{"segment":{"number":20,"multiplier":1}},{"segment":{"number":5,"multiplier":1}},{"segment":{"number":1,"multiplier":1}}]}}"#;
+        session.ingest_json(dart_two.as_bytes(), &mut delivery);
+        session.ingest_json(dart_three.as_bytes(), &mut delivery);
+        let token = session.pending_total_deadline().expect("deadline");
+        assert_eq!(
+            session.on_total_deadline(token, &mut delivery),
+            JourneyResult::Total(Some(26))
+        );
+        assert_eq!(session.pending_total_deadline(), None);
+        assert_eq!(
+            delivery
+                .requests
+                .iter()
+                .map(|r| r.text.as_str())
+                .collect::<Vec<_>>(),
+            ["26"]
+        );
     }
 }

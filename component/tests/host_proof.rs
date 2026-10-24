@@ -492,25 +492,6 @@ impl Proof {
         )
     }
 
-    async fn policy_event(&self, readiness: &str, reason: &str) {
-        tokio::time::timeout(WAIT, async {
-            loop {
-                let surface = self
-                    .runtime
-                    .render("autodarts", "board", Context::default())
-                    .await
-                    .unwrap();
-                let rendered = format!("{surface:?}");
-                if rendered.contains(readiness) && rendered.contains(reason) {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("guest processes the expected policy boundary");
-    }
-
     async fn finish(self, label: &str, forwarded: usize) {
         tokio::time::timeout(WAIT, async {
             loop {
@@ -547,7 +528,7 @@ impl Proof {
 fn fixture_frames(capture: bool) -> Vec<String> {
     let source = if capture {
         include_str!(
-            "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-reduced-capture.json"
+            "../../crates/autodarts-core/tests/fixtures/board-manager-jvl14-three-round-reduced-capture.json"
         )
     } else {
         include_str!(
@@ -565,46 +546,12 @@ fn fixture_frames(capture: bool) -> Vec<String> {
 async fn captured_replay(mode: &str, expected: &[&str], label: &str) {
     let (proof, mut socket) = Proof::start(mode).await;
     let capture = fixture_frames(true);
-    send(&mut socket, &capture[..12]).await;
-    proof
-        .policy_event(
-            "Policy readiness: collecting (0 darts)",
-            "BaselineEstablished",
-        )
-        .await;
-    assert!(proof.host.trace.lock().requests.is_empty());
-    assert!(proof.output.prepared.lock().is_empty());
-    send(&mut socket, &capture[12..]).await;
-    proof
-        .policy_event("Policy readiness: collecting (0 darts)", "InactiveMotion")
-        .await;
-    assert!(proof.host.trace.lock().requests.is_empty());
-    assert!(proof.output.prepared.lock().is_empty());
-
-    let continuation = fixture_frames(false);
-    let mut submitted = 0;
-    for (index, frame) in continuation.iter().enumerate() {
-        let emits = if mode == "total_only" {
-            matches!(index, 3 | 11 | 15)
-        } else {
-            matches!(index, 0..=3 | 7..=9 | 11..=15)
-        };
-        if emits {
-            proof.output.allow_one();
-        }
-        send(&mut socket, std::slice::from_ref(frame)).await;
-        if emits {
-            submitted += 1;
-            proof.host.terminals(submitted).await;
-        }
+    send(&mut socket, &capture).await;
+    for (index, _) in expected.iter().enumerate() {
+        proof.host.submissions(index + 1).await;
+        proof.output.allow_one();
+        proof.host.terminals(index + 1).await;
     }
-    assert_eq!(submitted, expected.len());
-    proof
-        .policy_event(
-            "Policy readiness: collecting (0 darts)",
-            "BaselineEstablished",
-        )
-        .await;
     let expected_requests: Vec<_> = expected
         .iter()
         .map(|text| (*text, SpeechOutcome::Delivered))
@@ -646,25 +593,33 @@ async fn ordered_and_repeated_removal() {
     drop(socket);
 }
 
-async fn burst_replacement() {
+async fn ordered_speech_does_not_replace_the_last_dart() {
     let (proof, mut socket) = Proof::start("each_dart_then_total").await;
     send(&mut socket, &[BASELINE, DART]).await;
     proof.output.wait_for(&proof.output.prepared, 1).await;
     send(&mut socket, &[DART_TWO, DART_THREE, PARTIAL]).await;
-    proof.host.submissions(4).await;
+    proof.host.submissions(1).await;
+    proof.output.allow_one();
+    proof.host.terminals(1).await;
+    proof.host.submissions(2).await;
+    proof.output.allow_one();
+    proof.host.terminals(2).await;
+    proof.host.submissions(3).await;
+    proof.output.allow_one();
     proof.host.terminals(3).await;
-    // No prepare permit has been issued: all three darts are genuinely replaced
-    // by the total, including the dart already observed inside preparation.
+    proof.host.submissions(4).await;
     proof.output.allow_one();
     proof.host.terminals(4).await;
     proof.host.assert_requests(&[
-        ("20", SpeechOutcome::Replaced),
-        ("5", SpeechOutcome::Replaced),
-        ("1", SpeechOutcome::Replaced),
+        ("20", SpeechOutcome::Delivered),
+        ("5", SpeechOutcome::Delivered),
+        ("1", SpeechOutcome::Delivered),
         ("26", SpeechOutcome::Delivered),
     ]);
-    proof.output.assert_delivered("living_room", &["26"]);
-    proof.finish("burst/replacement", 4).await;
+    proof
+        .output
+        .assert_delivered("living_room", &["20", "5", "1", "26"]);
+    proof.finish("ordered/fifo-speech", 4).await;
     drop(socket);
 }
 
@@ -803,21 +758,21 @@ async fn active_transport_is_not_replaced() {
 async fn compiled_component_uses_real_niles_speech_scheduler() {
     active_transport_is_not_replaced().await;
     ordered_and_repeated_removal().await;
-    burst_replacement().await;
+    ordered_speech_does_not_replace_the_last_dart().await;
     total_only().await;
     close_reconnect_and_room_switch().await;
     captured_replay(
         "each_dart_then_total",
         &[
-            "3", "7", "7", "17", "3", "7", "7", "17", "3", "7", "7", "17",
+            "60", "20", "7", "87", "40", "20", "0", "60", "12", "18", "0", "30",
         ],
-        "reduced-real-capture/synthetic-continuation/each-dart-then-total",
+        "jvl14-fixture-projection/each-dart-then-total",
     )
     .await;
     captured_replay(
         "total_only",
-        &["17", "17", "17"],
-        "reduced-real-capture/synthetic-continuation/total-only",
+        &["87", "60", "30"],
+        "jvl14-fixture-projection/total-only",
     )
     .await;
 }

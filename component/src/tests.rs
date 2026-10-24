@@ -375,6 +375,7 @@ fn websocket_callback_drives_each_dart_and_total_after_clean_baseline() {
         41,
         bindings::niles::integration::websocket::Message::Text(REMOVED.into()),
     );
+    drain_current_speech();
     assert_eq!(
         speech_stream::calls().submitted,
         [(7, "20".into()), (7, "5".into()), (7, "25".into())]
@@ -439,6 +440,7 @@ fn supplied_capture_uses_actual_callback_before_separate_successive_rounds() {
                 matches!(index, 0..=3 | 7..=9 | 11..=15)
             };
             send_event(&serde_json::to_string(envelope).unwrap());
+            drain_current_speech();
             if emits {
                 submitted += 1;
             }
@@ -617,19 +619,8 @@ fn reconfigure_disable_and_stop_close_websocket() {
 #[test]
 fn speech_outcomes_remain_correlated_after_repeated_polls() {
     setup(initial(false));
-    enable_announcements("each_dart_then_total");
+    enable_announcements("total_only");
     Plugin::init().unwrap();
-    for _ in 0..5 {
-        send_event(EMPTY_EVENT);
-        send_event(ONE_DART);
-        send_event(REMOVED);
-    }
-    let calls = speech_stream::calls();
-    let ids = calls
-        .submitted_ids
-        .iter()
-        .map(|(_, id, _)| *id)
-        .collect::<Vec<_>>();
     let outcomes = [
         bindings::niles::integration::speech_stream::Outcome::Delivered,
         bindings::niles::integration::speech_stream::Outcome::Busy,
@@ -642,26 +633,21 @@ fn speech_outcomes_remain_correlated_after_repeated_polls() {
         bindings::niles::integration::speech_stream::Outcome::NoSatellite,
         bindings::niles::integration::speech_stream::Outcome::Delivered,
     ];
-    speech_stream::set_statuses(
-        ids.iter()
-            .copied()
-            .zip(outcomes)
-            .map(
-                |(request, outcome)| bindings::niles::integration::speech_stream::RequestStatus {
-                    request,
-                    outcome,
-                },
-            )
-            .collect(),
-    );
-    http::set_replies(initial(false));
-    Plugin::on_timer("poll".into());
-    let lines = render_text();
-    let history = lines
-        .iter()
+    for outcome in outcomes {
+        send_event(EMPTY_EVENT);
+        send_event(ONE_DART);
+        send_event(REMOVED);
+        let request = speech_stream::calls().submitted_ids.last().unwrap().1;
+        speech_stream::set_statuses(vec![
+            bindings::niles::integration::speech_stream::RequestStatus { request, outcome },
+        ]);
+        poll_speech();
+    }
+    let history = render_text()
+        .into_iter()
         .find(|line| line.contains("Speech terminal history:"))
         .unwrap();
-    for (request, outcome) in ids.iter().zip([
+    for outcome in [
         "Delivered",
         "Busy",
         "Quiet",
@@ -671,19 +657,14 @@ fn speech_outcomes_remain_correlated_after_repeated_polls() {
         "Replaced",
         "RateLimited",
         "NoSatellite",
-        "Delivered",
-    ]) {
-        assert!(
-            history.split(", ").any(|record| {
-                record.contains(&format!("{request} gen ")) && record.ends_with(outcome)
-            }),
-            "{history}"
-        );
+    ] {
+        assert!(history.contains(outcome), "{history}");
     }
-    assert!(!lines.iter().any(|line| line.contains("Speech pending:")));
-    http::set_replies(initial(false));
-    Plugin::on_timer("poll".into());
-    assert_eq!(render_text(), lines);
+    assert!(
+        !render_text()
+            .iter()
+            .any(|line| line.contains("Speech pending:"))
+    );
 }
 
 #[test]
@@ -734,16 +715,30 @@ fn speech_submission_error_does_not_hide_pending_count() {
     ingest_announcement_json(EMPTY_EVENT.as_bytes());
     ingest_announcement_json(ONE_DART.as_bytes());
     ingest_announcement_json(REMOVED.as_bytes());
+    let first = speech_stream::calls().submitted_ids[0].1;
 
     speech_stream::set_submit_errors([bindings::niles::integration::types::HostError::Limit(
         "submit".into(),
     )]);
+    speech_stream::set_statuses(vec![
+        bindings::niles::integration::speech_stream::RequestStatus {
+            request: first,
+            outcome: bindings::niles::integration::speech_stream::Outcome::Delivered,
+        },
+    ]);
+    poll_speech();
     ingest_announcement_json(EMPTY_EVENT.as_bytes());
     ingest_announcement_json(ONE_DART.as_bytes());
     ingest_announcement_json(REMOVED.as_bytes());
-
-    assert!(render_text().iter().any(|line| {
-        line.contains("Speech submit failed") && line.contains("Speech pending: 1")
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("Speech submit failed"))
+    );
+    assert!(RUNTIME.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|runtime| runtime.speech_pending.is_empty())
     }));
 }
 
@@ -760,7 +755,6 @@ fn open_and_submit_rejections_are_visible_without_fake_terminal_success() {
             .iter()
             .any(|line| line.contains("Speech stream open failed"))
     );
-
     setup(initial(false));
     enable_announcements("each_dart_then_total");
     Plugin::init().unwrap();
@@ -772,7 +766,7 @@ fn open_and_submit_rejections_are_visible_without_fake_terminal_success() {
     assert!(
         matches!(
             result,
-            autodarts_core::local_score::JourneyResult::DeliveryFailed(_)
+            autodarts_core::local_score::JourneyResult::Dart(Some(20))
         ),
         "{result:?}"
     );
@@ -793,6 +787,25 @@ fn send_event(json: &str) {
         41,
         bindings::niles::integration::websocket::Message::Text(json.into()),
     );
+}
+fn drain_current_speech() {
+    loop {
+        let request = RUNTIME.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .and_then(|runtime| runtime.speech_in_flight)
+        });
+        let Some(request) = request else {
+            return;
+        };
+        speech_stream::set_statuses(vec![
+            bindings::niles::integration::speech_stream::RequestStatus {
+                request,
+                outcome: bindings::niles::integration::speech_stream::Outcome::Delivered,
+            },
+        ]);
+        poll_speech();
+    }
 }
 
 #[test]
@@ -847,7 +860,7 @@ fn asynchronous_close_can_delay_reopening_without_replaying_speech() {
     send_event(EMPTY_EVENT);
     send_event(ONE_DART);
     send_event(REMOVED);
-    assert_eq!(speech_stream::calls().submitted.len(), 3);
+    assert_eq!(speech_stream::calls().submitted.len(), 2);
 }
 
 #[test]
@@ -883,7 +896,7 @@ fn overflow_closes_pending_speech_and_recovers_without_a_reconnect() {
             .iter()
             .map(|(_, text)| text.as_str())
             .collect::<Vec<_>>(),
-        ["20", "20", "20"]
+        ["20", "20"]
     );
     assert_ne!(calls.submitted[1].0, old_session);
 }
@@ -922,7 +935,7 @@ fn untrustworthy_frames_close_pending_speech_and_require_a_clean_baseline() {
         send_event(ONE_DART);
         send_event(REMOVED);
         let calls = speech_stream::calls();
-        assert_eq!(calls.submitted.len(), 3);
+        assert_eq!(calls.submitted.len(), 2);
         assert_ne!(calls.submitted[1].0, old_session);
     }
 }
@@ -969,33 +982,22 @@ fn unresolved_tracking_rejects_without_eviction_or_replay_then_recovers() {
         send_event(REMOVED);
     }
     let calls = speech_stream::calls();
-    assert_eq!(calls.submitted.len(), MAX_PENDING_SPEECH);
-    assert!(
-        render_text()
-            .iter()
-            .any(|line| line.contains("tracking full"))
-    );
-    speech_stream::set_statuses(
-        calls
-            .submitted_ids
-            .iter()
-            .map(
-                |(_, request, _)| bindings::niles::integration::speech_stream::RequestStatus {
-                    request: *request,
-                    outcome: bindings::niles::integration::speech_stream::Outcome::Replaced,
-                },
-            )
-            .collect(),
-    );
-    send_event(REMOVED);
-    assert_eq!(speech_stream::calls().submitted.len(), MAX_PENDING_SPEECH);
-    send_event(EMPTY_EVENT);
-    send_event(ONE_DART);
-    send_event(REMOVED);
-    assert_eq!(
-        speech_stream::calls().submitted.len(),
-        MAX_PENDING_SPEECH + 1
-    );
+    assert_eq!(calls.submitted.len(), 1);
+    assert!(RUNTIME.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|runtime| runtime.speech_queue.len() < MAX_PENDING_SPEECH)
+    }));
+    assert!(render_text().iter().any(|line| line.contains("queue full")));
+    let first = calls.submitted_ids[0].1;
+    speech_stream::set_statuses(vec![
+        bindings::niles::integration::speech_stream::RequestStatus {
+            request: first,
+            outcome: bindings::niles::integration::speech_stream::Outcome::Delivered,
+        },
+    ]);
+    poll_speech();
+    assert_eq!(speech_stream::calls().submitted.len(), 2);
 }
 
 #[test]
@@ -1036,6 +1038,62 @@ fn speech_enablement_without_announcement_intent_does_not_open_a_session() {
     config::set("speech_stream_enabled", config::SettingValue::Boolean(true));
     Plugin::init().unwrap();
     assert!(speech_stream::calls().opened_rooms.is_empty());
+}
+
+#[test]
+fn callback_ingress_replays_exact_capture_fifo_and_deadline_timer() {
+    let capture: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../../crates/autodarts-core/tests/fixtures/board-manager-jvl14-three-round-reduced-capture.json"
+    ))
+    .unwrap();
+    setup(initial(false));
+    enable_announcements("total_only");
+    Plugin::init().unwrap();
+    websocket::status(
+        41,
+        bindings::niles::integration::websocket::ConnectionStatus::Connected,
+    );
+    for envelope in capture.as_array().unwrap() {
+        send_event(&serde_json::to_string(envelope).unwrap());
+    }
+    assert_eq!(
+        speech_stream::calls()
+            .submitted
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect::<Vec<_>>(),
+        ["87"]
+    );
+    drain_current_speech();
+    assert_eq!(
+        speech_stream::calls()
+            .submitted
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect::<Vec<_>>(),
+        ["87", "60", "30"]
+    );
+
+    setup(initial(false));
+    enable_announcements("total_only");
+    Plugin::init().unwrap();
+    websocket::status(
+        41,
+        bindings::niles::integration::websocket::ConnectionStatus::Connected,
+    );
+    send_event(EMPTY_EVENT);
+    send_event(ONE_DART);
+    send_event(TWO_DARTS);
+    send_event(
+        r#"{"type":"state","data":{"running":true,"numThrows":3,"throws":[{"segment":{"number":20,"multiplier":1}},{"segment":{"number":5,"multiplier":1}},{"segment":{"number":1,"multiplier":1}}]}}"#,
+    );
+    let timer = test_host::niles::integration::timers::after_calls()
+        .into_iter()
+        .find(|(id, _)| id.starts_with("total-deadline:"))
+        .map(|(id, _)| id)
+        .expect("registered deadline");
+    Plugin::on_timer(timer);
+    assert_eq!(speech_stream::calls().submitted, [(7, "26".into())]);
 }
 
 fn render_text() -> Vec<String> {

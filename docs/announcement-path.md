@@ -1,56 +1,40 @@
 # Announcement-path feasibility
 
-Status: the checked-in component has a room-bound Niles speech-stream path and explicit host-outcome bookkeeping. It is an implementation candidate, not an installed or audible proof. Niles retains household and speech authority.
+Status: the checked-in component has Board Manager WebSocket ingress, a room-bound Niles speech-stream path, one-shot total deadlines, and correlated host-outcome bookkeeping. It is a local implementation candidate, not installed or audible proof. Niles retains household and speech authority.
 
-## JVL-13 supplied reduced real capture and alpha.2 offline evidence
+## JVL-14 capture and synthetic provenance
 
-`board-manager-1.0.7-reduced-capture.json` is the supplied reduced real capture: a 14-envelope ordered projection of the Board Manager messages, with coordinate/camera/timing data removed and consecutive identical motion flags coalesced. It is not a reconstructed baseline or a synthetic continuation. The capture begins with the nonempty 3/7/7 collection and contains the real zero-count `Takeout finished` state with omitted `throws`; no empty state was added. The initial nonempty collection remains silent, and that captured zero-count event establishes the safe baseline.
+`crates/autodarts-core/tests/fixtures/board-manager-jvl14-three-round-reduced-capture.json` is a deterministic 40-envelope fixture projection; the raw capture source was unavailable in this worktree. It is replayed without a prepended baseline; its running empty `Started` state is the usable baseline. The documented round shape is `[60,20,7]`, `[40,20,0]`, and `[12,18,0]`, producing totals 87, 60, and 30. The outside misses are accepted only when their number, `M<number>` name, `Outside` bed, and multiplier zero agree. This projection is not live-provider evidence.
 
-`numThrows: 0` with omitted `throws` is normalized to the canonical empty state. Explicit empty arrays remain valid; missing/nonzero arrays, nulls, contradictory counts, malformed darts, and out-of-range values remain fail-closed. Typed diagnostics expose policy readiness separately from the last ignored, suppressed, invalid, or processed event. `board-manager-1.0.7-synthetic-continuation.json` remains separate and exercises three later identical 3/7/7 collections in both modes; it yields `3,7,7,17` per collection in Each dart → Total and `17` per collection in Total only.
+`board-manager-jvl14-synthetic-scenarios.json` is explicitly synthetic. It contains partial-round takeout, timer-first, takeout-first, and detected-zero schedules. It is not a reconstruction of provider timing or live device behavior. The older JVL-13 fixtures remain separate maintained evidence.
 
-Core replay, fake-WIT component ingress, and compiled pinned-host proof now consume the exact reduced real capture before the separate synthetic continuation. The real-capture phase asserts no initial nonempty replay, baseline recovery at the omitted-array event, and no speech submissions before continuation. This remains offline policy/submission evidence: it does not establish installation, live event ordering or miss encoding, household routing, host compatibility, or audible playback.
+## Core policy
 
-The current local candidate is `v0.1.0-alpha.2`. Historical verification results, suite counts, package hashes, and their exact source commits are recorded below. Final-head acceptance evidence belongs to the exact pushed commit and is recorded in [PR #9](https://github.com/jvlorg/niles-autodarts/pull/9) and the final report after verification. The compiled proof requires free loopback port 3180 and uses the pinned host; no live device writes, installation, deployment, release publication, or audible acceptance occurs here.
+`AnnouncementSession` parses bounded JSON and owns `LocalJourney`. A clean count-zero state establishes the baseline. Each accepted append is validated as a prefix extension of the previous snapshot. Each dart mode records each accepted score; Total only records the completed sum.
 
-Existing synthetic regressions continue to cover duplicate/progressive shrink, ambiguous scoring, stopped-board pending speech, failed submission, reconnect and reconfiguration safety. Those edge cases remain in synthetic coverage and are not mixed into the supplied real capture.
+The third accepted dart creates one `RoundToken` and exposes it through `pending_total_deadline()`. Core never reads a clock. The component registers a one-second `after` timer and later supplies the token through `on_total_deadline()`. Exact motion takeout or exact state `Takeout finished` can complete earlier. The third-dart `status: Takeout` string alone does not. Deadline expiry and takeout consume the same eligibility and total attempt, so duplicate, stale, cancelled, or simultaneous callbacks cannot emit twice. One- and two-dart rounds require explicit takeout; empty snapshots do not manufacture darts or totals.
 
-## Current path
+A clear or shrink retains an eligible cached collection until its boundary. Corrections, malformed frames, stopped input, reconnect, disablement, reconfiguration, queue overflow, and stale generations invalidate it. A completed round's request text and key are immutable when later state arrives.
 
-The component opens Board Manager `/api/events` when announcement intent is enabled. `speech_stream_enabled` separately gates a room-bound stream for the configured room. `AnnouncementSession` parses bounded text frames and emits numeric request intent. The component submits text to Niles, records host request IDs, polls status, and closes the stream on stop or reset. HTTP `/api/state` remains status/baseline-only.
+## Component speech lifecycle
 
-The component distinguishes accepted submission from delivery. Pending requests remain visible across polling failures; terminal outcomes are retained individually; no utterance is retried automatically. Reconnect, disablement, settings changes, overflow, and malformed/binary/oversized ingress invalidate the speech generation and locally discard unresolved requests. Old connection IDs are ignored. Overflow does not imply a new WebSocket connection: speech reopens without waiting for a nonexistent Connected callback. Because released host close is asynchronous, an unavailable reopen can resume on subsequent event/timer callbacks without replaying attempted commentary.
+A core delivery call admits an immutable intent into a bounded FIFO of 32 total local intents, including the in-flight request. The component submits only when no request is in flight. The next intent waits for the exact host request ID's terminal outcome. `pending` and omitted status do not unlock it. Poll errors preserve the in-flight item and queue. Every terminal outcome—delivered, busy, quiet, expired, failed, cancelled, replaced, rate-limited, or no-satellite—retires one request and pumps the next. Submission failure is recorded and is not retried.
 
-## Modes and scheduler constraint
+A dedicated one-second speech-progress timer retries status collection while one request is in flight. It is progress polling, not a speech-duration estimate. Periodic status polling may collect the same outcomes through the idempotent collector. Late timer IDs are ignored unless their complete generation or round ID matches current state. Cancelling a timer is not the safety mechanism; token equality and consumed state are.
 
-`Each dart → Total` submits each eligible dart and then the total. `Total only` submits only the total at the first explicit partial/full removal marker. These are detection-derived local values, not game-authoritative scores. The released Niles scheduler permits one replaceable pending request; therefore `Accepted` does not promise that every rapid utterance reaches a satellite. This is a host scheduling contract, not a reason to invent an add-on retry queue.
+Ordinary clear and takeout do not close the speech stream or discard the FIFO. Observed stopped/disconnected input, successful detection stop, disablement, settings changes, parse errors, overflow, and reconnect close pending host work, discard queued stale intents, advance the speech generation, and require a fresh baseline. The pinned close contract cannot forcibly interrupt transport already started; no stronger audible-stop claim is made.
 
-## Proof and unresolved work
+`Ok(())` at the core adapter means adapter acceptance. Host submission, terminal transport result, and human audibility are separate observations.
 
-Fake-import callback tests cover lifecycle, request IDs, polling recovery, every released terminal outcome, actual history rollover, pending-bookkeeping rejection, byte-size boundaries, and overflow recovery without reconnect. The compiled proof uses `niles_plugins::Runtime` plus the pinned release's real `SpeechSessionManager` and semaphore-gated recording output. The former OpenSSL blocker came from the proof's direct `ort` dependency enabling native-TLS defaults that the pinned host disables; matching its feature configuration removes that accidental dependency.
+## Verification
 
-The exact unchanged candidate only permits WebSocket ports 80/3180/443, so compiled scenarios require free loopback port 3180. The original ephemeral-port acceptance criterion is not satisfied; broadening production permissions to make a test pass was rejected. Active-transport preservation is tested separately through the same real manager's public terminal receivers, not presented as compiled-component evidence: the released adapter withholds later outcomes behind the active pending request. The released WIT close import is void and polling is session-wide, so close-error/per-request-poll-error injection is not an available contract.
+Run the local replay with:
 
-Synthetic eligibility and recording output do not establish installed-host compatibility, live event ordering/miss encoding, household routing or human audibility. No host-private Rust function is used as an add-on API. No live device writes, persistent installation, deployment or release publication occur in these fixtures.
+```text
+cargo run -p autodarts-core --example announcement_replay
+cargo test --workspace
+```
 
-## JVL-13 verification record
+The scoped maintained chain is `bash scripts/verify.sh --quick`. Final certification is `bash scripts/verify.sh`; it prepares the pinned host, compares the exact WIT, builds and checks the component, runs the compiled proof, packages the exact candidate, verifies checksums, and runs actionlint. The compiled proof requires free loopback port 3180 and uses the pinned host checkout; it does not use host-private APIs.
 
-The supplied reduced real capture is replayed as an ordered 14-envelope array through core JSON ingress, fake-WIT component callbacks, and the compiled pinned-host proof. It stays silent through the initial nonempty 3/7/7 collection; the captured zero-count state with omitted `throws` establishes `Collecting (0 darts)`. The separate synthetic continuation then produces three successive collections: `3,7,7,17` repeated three times in Each dart → Total and `17` repeated three times in Total only. No synthetic baseline is inserted into the real capture.
-
-The complete `bash scripts/verify.sh` chain passed on source head `f19753643dd936376a6659ce24b9168ec2f2a60e` and was pushed to PR #9 before the documentation-only evidence update. A later full-chain run was recorded for source head `59c33093751c54256c0badc874ad8c89dd0d42a1` in the PR description. The original verification included:
-
-- 35 core tests, 26 component tests, 1 compiled pinned-host proof test, 8 maintained probe tests, 9 release-safety tests, and 0 failing doc-tests.
-- Formatting, workspace build, strict workspace Clippy, release Wasm build, maintained replay, pinned host preparation at `4f3c0a10b2accd022354a23b9f961b222c27eb56`, exact WIT comparison, host-proof formatting/strict Clippy, exact package verification, and actionlint.
-- `sha256sum --check SHA256SUMS` passed for the packaged alpha.2 candidate.
-
-The package verified by the `f19753643dd936376a6659ce24b9168ec2f2a60e` run recorded these SHA-256 values:
-
-| Candidate asset | SHA-256 |
-|---|---|
-| `integration.wasm` | `f24227e62608da2ad7d41e2587ed96e756dbf564abf1a2630be32989e01b2b06` |
-| `niles-integration.toml` | `8e25ae3fc2377aa54ab1ba13cf93ca8ce98befce26548650e8d48b8ec152e91a` |
-| `provenance.json` | `9bcf94721e7dbe344e3efa4a816df29ac0e2c9aa83f34ae32a7d82bd26cc13ac` |
-| `SHA256SUMS` | `a8c3171a815b126c812faa108a381976fdc9f57c75f1c27e04ff9ca8fdc0a669` |
-
-Commit `a175d1601051ff5bbd7b7e9162697f03e5066f15` includes the capture-fidelity regression assertion and verification-evidence wording added after those full-chain runs. Scoped formatting, strict Clippy, `cargo test -p autodarts-core`, and documentation diff checks were recorded for that revision; they are not full-chain evidence for a later head. Final acceptance requires the complete maintained chain on the exact pushed commit, with its SHA, counts, and package hashes recorded in PR #9 and the final report. Keeping that final-head record outside the commit avoids creating another unverified head merely to record its own SHA.
-
-This evidence remains offline policy, compiled ingress, and Niles scheduler proof. It does not establish installed-host compatibility, live event ordering or miss encoding, household routing, or audible playback. No live-device writes, installation, deployment, release publication, or audible retest occurred.
+The compiled proof records scheduler and recording-output observations for ordered speech and both modes. Recording output is not audible acceptance. The proof does not establish installed-host compatibility, general live Board Manager ordering, live miss encoding beyond the supplied narrow shape, household routing, selected-satellite behavior, or human audibility. No live writes, installation, deployment, release publication, or push occur in this implementation stage.

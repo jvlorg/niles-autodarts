@@ -1,180 +1,94 @@
 use autodarts_core::local_score::JourneyResult;
 use autodarts_core::{
-    AnnouncementDelivery, AnnouncementMode, AnnouncementSession, AnnouncementSettings,
-    RecordingDelivery,
+    AnnouncementMode, AnnouncementSession, AnnouncementSettings, RecordingDelivery,
 };
 
-const BASELINE: &str = r#"{"type":"state","data":{"running":true,"numThrows":0,"throws":[]}}"#;
-const DART_ONE: &str = r#"{"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"number":20,"multiplier":1}}]}}"#;
-const DART_TWO: &str = r#"{"type":"state","data":{"running":true,"numThrows":2,"throws":[{"segment":{"number":20,"multiplier":1}},{"segment":{"number":5,"multiplier":1}}]}}"#;
-const DART_THREE: &str = r#"{"type":"state","data":{"running":true,"numThrows":3,"throws":[{"segment":{"number":20,"multiplier":1}},{"segment":{"number":5,"multiplier":1}},{"segment":{"number":1,"multiplier":1}}]}}"#;
-const CLEAR: &str = r#"{"type":"state","data":{"running":true,"numThrows":0,"throws":[]}}"#;
-const PARTIAL: &str = r#"{"type":"motion_state","data":{"isTakeoutPartial":true}}"#;
-const FULL: &str = r#"{"type":"motion_state","data":{"isTakeoutFull":true}}"#;
-
-fn run(
-    session: &mut AnnouncementSession,
-    delivery: &mut impl AnnouncementDelivery,
-    json: &str,
-) -> JourneyResult {
-    session.ingest_json(json.as_bytes(), delivery)
-}
-
-fn replay_session(mode: AnnouncementMode) -> (&'static str, AnnouncementSession) {
-    let mode_name = match mode {
+fn session(mode: AnnouncementMode) -> AnnouncementSession {
+    let name = match mode {
         AnnouncementMode::EachDartThenTotal => "each_dart_then_total",
         AnnouncementMode::TotalOnly => "total_only",
     };
-    let settings = AnnouncementSettings::new(true, Some(mode_name), "living_room")
-        .expect("valid replay settings");
-    (mode_name, AnnouncementSession::new(settings))
+    AnnouncementSession::new(
+        AnnouncementSettings::new(true, Some(name), "living_room").expect("valid replay settings"),
+    )
 }
 
-fn replay_mode(mode: AnnouncementMode) -> RecordingDelivery {
-    let (mode_name, mut session) = replay_session(mode);
-    let mut delivery = RecordingDelivery::default();
-    for collection in 1..=3 {
-        let baseline = run(&mut session, &mut delivery, BASELINE);
-        assert!(matches!(
-            baseline,
-            JourneyResult::Baseline | JourneyResult::Suppressed
-        ));
-        assert_eq!(
-            session.diagnostics().readiness,
-            autodarts_core::AnnouncementReadiness::Collecting { dart_count: 0 }
-        );
-        assert_eq!(
-            run(&mut session, &mut delivery, DART_ONE),
-            JourneyResult::Dart((mode == AnnouncementMode::EachDartThenTotal).then_some(20))
-        );
-        assert_eq!(
-            run(&mut session, &mut delivery, DART_TWO),
-            JourneyResult::Dart((mode == AnnouncementMode::EachDartThenTotal).then_some(5))
-        );
-        assert_eq!(
-            run(&mut session, &mut delivery, DART_THREE),
-            JourneyResult::Dart((mode == AnnouncementMode::EachDartThenTotal).then_some(1))
-        );
-        if mode == AnnouncementMode::TotalOnly && collection == 2 {
-            assert_eq!(
-                run(&mut session, &mut delivery, CLEAR),
-                JourneyResult::Suppressed
-            );
-        }
-        let marker = if collection == 2 { PARTIAL } else { FULL };
-        assert_eq!(
-            run(&mut session, &mut delivery, marker),
-            JourneyResult::Total(Some(26))
-        );
-        assert_eq!(
-            run(&mut session, &mut delivery, marker),
-            JourneyResult::Suppressed
-        );
-        println!("{mode_name} collection {collection}: policy total 26");
-    }
-    delivery
-}
-
-fn replay_capture_with_synthetic_continuation(mode: AnnouncementMode) -> RecordingDelivery {
-    let (mode_name, mut session) = replay_session(mode);
+fn replay_fixture(mode: AnnouncementMode) -> RecordingDelivery {
+    let mut session = session(mode);
     let mut delivery = RecordingDelivery::default();
     let capture: serde_json::Value = serde_json::from_slice(include_bytes!(
-        "../tests/fixtures/board-manager-1.0.7-reduced-capture.json"
+        "../tests/fixtures/board-manager-jvl14-three-round-reduced-capture.json"
     ))
-    .expect("valid reduced real capture");
-    for (index, envelope) in capture
-        .as_array()
-        .expect("capture array")
-        .iter()
-        .enumerate()
-    {
+    .expect("valid JVL-14 fixture projection");
+    for envelope in capture.as_array().expect("capture array") {
         let json = serde_json::to_vec(envelope).expect("capture envelope");
-        let result = run(
-            &mut session,
-            &mut delivery,
-            std::str::from_utf8(&json).expect("capture JSON"),
-        );
-        assert!(delivery.requests.is_empty());
-        if index == 11 {
-            assert_eq!(result, JourneyResult::Baseline);
-            assert_eq!(
-                session.diagnostics().readiness,
-                autodarts_core::AnnouncementReadiness::Collecting { dart_count: 0 }
-            );
-        }
+        session.ingest_json(&json, &mut delivery);
     }
-    println!("{mode_name}: reduced real capture stayed silent and established the empty baseline");
+    delivery
+}
 
-    let continuation: serde_json::Value = serde_json::from_slice(include_bytes!(
-        "../tests/fixtures/board-manager-1.0.7-synthetic-continuation.json"
+fn replay_synthetic_partial() -> RecordingDelivery {
+    let mut session = session(AnnouncementMode::TotalOnly);
+    let mut delivery = RecordingDelivery::default();
+    let scenarios: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../tests/fixtures/board-manager-jvl14-synthetic-scenarios.json"
     ))
-    .expect("valid synthetic continuation");
-    for envelope in continuation.as_array().expect("continuation array") {
-        let json = serde_json::to_vec(envelope).expect("continuation envelope");
-        run(
-            &mut session,
-            &mut delivery,
-            std::str::from_utf8(&json).expect("continuation JSON"),
-        );
+    .expect("valid synthetic scenarios");
+    for envelope in scenarios["partial_round_takeout"].as_array().unwrap() {
+        let json = serde_json::to_vec(envelope).unwrap();
+        session.ingest_json(&json, &mut delivery);
     }
-    println!(
-        "{mode_name}: synthetic continuation accepted {} policy submissions",
-        delivery.requests.len()
+    delivery
+}
+
+fn replay_deadline_first() -> RecordingDelivery {
+    let mut session = session(AnnouncementMode::TotalOnly);
+    let mut delivery = RecordingDelivery::default();
+    let scenarios: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../tests/fixtures/board-manager-jvl14-synthetic-scenarios.json"
+    ))
+    .expect("valid synthetic scenarios");
+    for envelope in scenarios["deadline_timer_first"].as_array().unwrap() {
+        let json = serde_json::to_vec(envelope).unwrap();
+        session.ingest_json(&json, &mut delivery);
+    }
+    let token = session
+        .pending_total_deadline()
+        .expect("synthetic deadline");
+    assert_eq!(
+        session.on_total_deadline(token, &mut delivery),
+        JourneyResult::Total(Some(26))
     );
     delivery
+}
+
+fn texts(delivery: &RecordingDelivery) -> Vec<&str> {
+    delivery
+        .requests
+        .iter()
+        .map(|request| request.text.as_str())
+        .collect()
 }
 
 fn main() {
-    println!(
-        "Offline reduced real-capture replay plus synthetic continuation: settings → JSON → session → recording"
-    );
-    let each = replay_mode(AnnouncementMode::EachDartThenTotal);
-    assert_eq!(each.requests.len(), 12);
+    let each = replay_fixture(AnnouncementMode::EachDartThenTotal);
     assert_eq!(
-        each.requests
-            .iter()
-            .map(|request| request.text.as_str())
-            .collect::<Vec<_>>(),
+        texts(&each),
         [
-            "20", "5", "1", "26", "20", "5", "1", "26", "20", "5", "1", "26"
+            "60", "20", "7", "87", "40", "20", "0", "60", "12", "18", "0", "30"
         ]
     );
-    let total = replay_mode(AnnouncementMode::TotalOnly);
-    assert_eq!(total.requests.len(), 3);
-    assert_eq!(
-        total
-            .requests
-            .iter()
-            .map(|request| request.text.as_str())
-            .collect::<Vec<_>>(),
-        ["26", "26", "26"]
-    );
-    let captured_each =
-        replay_capture_with_synthetic_continuation(AnnouncementMode::EachDartThenTotal);
-    assert_eq!(
-        captured_each
-            .requests
-            .iter()
-            .map(|request| request.text.as_str())
-            .collect::<Vec<_>>(),
-        [
-            "3", "7", "7", "17", "3", "7", "7", "17", "3", "7", "7", "17"
-        ]
-    );
-    let captured_total = replay_capture_with_synthetic_continuation(AnnouncementMode::TotalOnly);
-    assert_eq!(
-        captured_total
-            .requests
-            .iter()
-            .map(|request| request.text.as_str())
-            .collect::<Vec<_>>(),
-        ["17", "17", "17"]
-    );
-    for request in each.requests.iter().chain(total.requests.iter()) {
-        println!(
-            "policy submission room={} text={} key={}",
-            request.room, request.text, request.deduplication_key
-        );
-    }
-    println!("These are policy submissions; they do not prove transport or audibility.");
+
+    let totals = replay_fixture(AnnouncementMode::TotalOnly);
+    assert_eq!(texts(&totals), ["87", "60", "30"]);
+
+    let partial = replay_synthetic_partial();
+    assert_eq!(texts(&partial), ["25"]);
+
+    let timer = replay_deadline_first();
+    assert_eq!(texts(&timer), ["26"]);
+
+    println!("JVL-14 fixture projection: 87, 60, 30 totals in both modes");
+    println!("Synthetic partial and deadline-first scenarios remain separately labelled");
+    println!("These are policy submissions; they do not prove host transport or audibility.");
 }

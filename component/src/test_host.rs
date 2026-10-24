@@ -142,14 +142,41 @@ pub mod niles {
         }
         pub mod timers {
             use std::cell::RefCell;
-            thread_local! { static CALLS: RefCell<Vec<(String, u32)>> = const { RefCell::new(Vec::new()) }; }
+            thread_local! {
+                static CALLS: RefCell<Vec<(String, u32)>> = const { RefCell::new(Vec::new()) };
+                static AFTER: RefCell<Vec<(String, u32)>> = const { RefCell::new(Vec::new()) };
+                static CANCELLATIONS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+                static FAIL_AFTER: RefCell<bool> = const { RefCell::new(false) };
+            }
             pub fn every(id: &str, seconds: u32) -> Result<(), ()> {
                 CALLS.with(|slot| slot.borrow_mut().push((id.into(), seconds)));
                 Ok(())
             }
+            pub fn after(id: &str, seconds: u32) -> Result<(), ()> {
+                if FAIL_AFTER.with(|slot| *slot.borrow()) {
+                    return Err(());
+                }
+                AFTER.with(|slot| slot.borrow_mut().push((id.into(), seconds)));
+                Ok(())
+            }
+            pub fn cancel(id: &str) {
+                CANCELLATIONS.with(|slot| slot.borrow_mut().push(id.into()));
+            }
             #[allow(dead_code)]
             pub fn calls() -> Vec<(String, u32)> {
                 CALLS.with(|slot| slot.borrow().clone())
+            }
+            #[allow(dead_code)]
+            pub fn after_calls() -> Vec<(String, u32)> {
+                AFTER.with(|slot| slot.borrow().clone())
+            }
+            #[allow(dead_code)]
+            pub fn cancellations() -> Vec<String> {
+                CANCELLATIONS.with(|slot| slot.borrow().clone())
+            }
+            #[allow(dead_code)]
+            pub fn fail_after(value: bool) {
+                FAIL_AFTER.with(|slot| *slot.borrow_mut() = value);
             }
         }
         pub mod ui {
