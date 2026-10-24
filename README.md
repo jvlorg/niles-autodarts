@@ -16,6 +16,7 @@ Standalone [Niles](https://github.com/MarkNygaard/niles) add-on candidate for lo
 - Host `pending`, all terminal outcomes, polling errors, adapter acceptance, and locally discarded requests are distinct. No request is automatically replayed. `delivered` is host transport evidence, not human audibility.
 - Multiplier-zero misses are accepted only as canonical `M1` through `M20` with matching number, `Outside` bed, and zero multiplier. Ordinary scoring retains existing validation. Local totals are detection-derived sums, not authoritative game scores.
 - Clean `numThrows == 0` is the only baseline. Corrections, malformed input, stopped input, reconnects, disablement, settings changes, overflow, and stale generations invalidate commentary until a new baseline. Ordinary clear/takeout does not cancel already-triggered FIFO work.
+Commentary session state follows validated detection observations rather than command acknowledgement or WebSocket connection alone. Initialization, `Starting`, reconnect, and stopped/unavailable observations leave the room-bound speech session closed or close it and discard pending commentary; a current confirmed `running` observation may reopen it, while the core still requires a new clean baseline before old darts can produce speech. The Board Manager event observation remains connected after stop, and the add-on never wakes detection automatically.
 
 ## Evidence and commands
 

@@ -703,7 +703,7 @@ fn invalid_poll_interval_fails_closed_instead_of_defaulting() {
 
 #[test]
 fn announcement_settings_room_speech_lifecycle_and_synthetic_delivery() {
-    setup(initial(false));
+    setup(initial(true));
     config::set("announcements_enabled", config::SettingValue::Boolean(true));
     config::set(
         "announcement_mode",
@@ -744,7 +744,7 @@ fn announcement_settings_room_speech_lifecycle_and_synthetic_delivery() {
             .iter()
             .any(|line| line == "Announcement room: living_room")
     );
-    assert!(lines.iter().any(|line| line == "Speech stream open"));
+    assert!(lines.iter().any(|line| line == "Speech session: open"));
 
     const EMPTY: &str = r#"{"type":"state","data":{"running":true,"numThrows":0,"throws":[]}}"#;
     const DART: &str = r#"{"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"number":20,"multiplier":1}}]}}"#;
@@ -783,7 +783,11 @@ fn announcement_settings_room_speech_lifecycle_and_synthetic_delivery() {
     Plugin::on_timer("poll".into());
     let lines = render_text();
     assert!(lines.iter().any(|line| line.contains("Replaced")));
-    assert!(lines.iter().any(|line| line.contains("Speech stream open")));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("Speech session: open"))
+    );
     assert!(
         lines
             .iter()
@@ -1173,7 +1177,7 @@ fn speech_outcomes_remain_correlated_after_repeated_polls() {
 
 #[test]
 fn speech_poll_errors_preserve_pending_requests_and_recover() {
-    setup(initial(false));
+    setup(initial(true));
     enable_announcements("total_only");
     Plugin::init().unwrap();
     ingest_announcement_json(EMPTY_EVENT.as_bytes());
@@ -1213,7 +1217,7 @@ fn speech_poll_errors_preserve_pending_requests_and_recover() {
 }
 #[test]
 fn speech_submission_error_does_not_hide_pending_count() {
-    setup(initial(false));
+    setup(initial(true));
     enable_announcements("total_only");
     Plugin::init().unwrap();
     ingest_announcement_json(EMPTY_EVENT.as_bytes());
@@ -1249,7 +1253,7 @@ fn speech_submission_error_does_not_hide_pending_count() {
 
 #[test]
 fn open_and_submit_rejections_are_visible_without_fake_terminal_success() {
-    setup(initial(false));
+    setup(initial(true));
     enable_announcements("total_only");
     speech_stream::set_open_error(Some(
         bindings::niles::integration::types::HostError::Unavailable("open".into()),
@@ -1258,9 +1262,9 @@ fn open_and_submit_rejections_are_visible_without_fake_terminal_success() {
     assert!(
         render_text()
             .iter()
-            .any(|line| line.contains("Speech stream open failed"))
+            .any(|line| line.contains("Speech stream reopen failed"))
     );
-    setup(initial(false));
+    setup(initial(true));
     enable_announcements("each_dart_then_total");
     Plugin::init().unwrap();
     speech_stream::set_submit_errors([bindings::niles::integration::types::HostError::Limit(
@@ -1314,6 +1318,100 @@ fn drain_current_speech() {
 }
 
 #[test]
+fn jvl16_stopped_idle_session_closes_once_and_observation_survives() {
+    setup(initial(true));
+    enable_announcements("total_only");
+    Plugin::init().unwrap();
+    let session = speech_stream::calls().opened_sessions[0].0;
+    let puts_before = http::requests()
+        .iter()
+        .filter(|request| request.method == http::Method::Put)
+        .count();
+    let stopped = r#"{"type":"state","data":{"connected":true,"running":false,"numThrows":0}}"#;
+    send_event(stopped);
+    send_event(stopped);
+    assert_eq!(speech_stream::calls().closed, [session]);
+    assert_eq!(speech_stream::calls().opened_sessions.len(), 1);
+    assert_eq!(
+        http::requests()
+            .iter()
+            .filter(|request| request.method == http::Method::Put)
+            .count(),
+        puts_before
+    );
+    let lines = render_text();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Observation connection: connecting")
+    );
+    assert!(websocket::calls().closed.is_empty());
+    assert!(
+        lines.iter().any(|line| line
+            .starts_with("Speech session: closed (awaiting confirmed running detection)")),
+        "{lines:?}"
+    );
+    send_event(EMPTY_EVENT);
+    assert_eq!(speech_stream::calls().opened_sessions.len(), 2);
+}
+
+#[test]
+fn jvl16_starting_stays_closed_and_running_reopens_without_old_darts() {
+    setup(initial(true));
+    enable_announcements("total_only");
+    Plugin::init().unwrap();
+    send_event(r#"{"type":"state","data":{"running":false,"numThrows":0}}"#);
+    let opened_after_stop = speech_stream::calls().opened_sessions.len();
+    send_event(r#"{"type":"state","data":{"status":"Starting","running":false,"numThrows":0}}"#);
+    send_event(
+        r#"{"type":"state","data":{"status":"Starting","running":true,"numThrows":1,"throws":[{"segment":{"number":20,"multiplier":1}}]}}"#,
+    );
+    assert_eq!(
+        speech_stream::calls().opened_sessions.len(),
+        opened_after_stop
+    );
+    send_event(
+        r#"{"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"number":20,"multiplier":1}}]}}"#,
+    );
+    assert_eq!(
+        speech_stream::calls().opened_sessions.len(),
+        opened_after_stop + 1
+    );
+    assert!(speech_stream::calls().submitted.is_empty());
+    send_event(EMPTY_EVENT);
+    send_event(ONE_DART);
+    send_event(REMOVED);
+    assert_eq!(speech_stream::calls().submitted, [(8, "20".into())]);
+}
+
+#[test]
+fn jvl16_stop_cancels_pending_commentary_and_old_callbacks() {
+    for mode in ["each_dart_then_total", "total_only"] {
+        setup(initial(true));
+        enable_announcements(mode);
+        Plugin::init().unwrap();
+        send_event(EMPTY_EVENT);
+        send_event(ONE_DART);
+        send_event(TWO_DARTS);
+        send_event(THREE_DARTS);
+        let old_timer = latest_timer("total-deadline:");
+        let calls = speech_stream::calls();
+        let old_request = calls.submitted_ids.first().map(|(_, request, _)| *request);
+        send_event(r#"{"type":"state","data":{"running":false,"numThrows":0}}"#);
+        if let Some(request) = old_request {
+            set_terminal(request);
+            poll_speech();
+        }
+        Plugin::on_timer(old_timer);
+        assert_eq!(speech_stream::calls().closed.len(), 1);
+        assert_eq!(
+            speech_stream::calls().submitted.len(),
+            old_request.is_some() as usize
+        );
+    }
+}
+
+#[test]
 fn stopped_board_discards_pending_speech_and_requires_new_baseline() {
     setup(initial(false));
     enable_announcements("each_dart_then_total");
@@ -1338,7 +1436,7 @@ fn stopped_board_discards_pending_speech_and_requires_new_baseline() {
 
 #[test]
 fn asynchronous_close_can_delay_reopening_without_replaying_speech() {
-    setup(initial(false));
+    setup(initial(true));
     enable_announcements("each_dart_then_total");
     Plugin::init().unwrap();
     send_event(EMPTY_EVENT);
@@ -1352,13 +1450,18 @@ fn asynchronous_close_can_delay_reopening_without_replaying_speech() {
     );
     send_event(REMOVED);
     assert_eq!(speech_stream::calls().submitted.len(), 1);
+    assert!(render_text().iter().any(|line| {
+        line.contains("Speech session: closed (awaiting confirmed running detection)")
+    }));
+    http::set_replies(initial(true));
+    Plugin::on_timer("poll".into());
     assert!(
         render_text()
             .iter()
-            .any(|line| line.contains("reopen failed"))
+            .any(|line| line.contains("Speech stream reopen failed"))
     );
     speech_stream::set_open_error(None);
-    http::set_replies(initial(false));
+    http::set_replies(initial(true));
     Plugin::on_timer("poll".into());
     assert_eq!(speech_stream::calls().opened_sessions.len(), 2);
     assert_eq!(speech_stream::calls().submitted.len(), 1);

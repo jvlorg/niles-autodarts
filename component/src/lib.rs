@@ -71,6 +71,7 @@ struct Runtime {
     detection_readback: Option<String>,
     speech_session: Option<u32>,
     speech_reopen_pending: bool,
+    speech_running_observed: bool,
     speech_generation: u64,
     speech_pending: BTreeMap<u64, SpeechRequest>,
     speech_in_flight: Option<u64>,
@@ -487,26 +488,41 @@ fn finish_detection(runtime: &mut Runtime, desired: bool) {
         "stopped confirmed".into()
     });
     runtime.detection_readback = None;
-    if desired {
+}
+
+fn speech_has_live_work(runtime: &Runtime) -> bool {
+    runtime.speech_session.is_some()
+        || runtime.speech_reopen_pending
+        || runtime.speech_in_flight.is_some()
+        || !runtime.speech_pending.is_empty()
+        || !runtime.speech_queue.is_empty()
+        || runtime.deadline_timer.is_some()
+        || runtime.speech_progress_timer.is_some()
+        || !matches!(
+            runtime.announcement_session.diagnostics().readiness,
+            autodarts_core::AnnouncementReadiness::AwaitingBaseline
+                | autodarts_core::AnnouncementReadiness::Disabled
+        )
+}
+
+fn reconcile_speech_observation(runtime: &mut Runtime, snapshot: &Snapshot) {
+    if confirms(snapshot, true) {
+        runtime.speech_running_observed = true;
         reopen_speech(runtime);
-    } else {
-        invalidate_speech(runtime, "detection stop observed");
+        return;
+    }
+    let was_authorized = runtime.speech_running_observed;
+    runtime.speech_running_observed = false;
+    if was_authorized || speech_has_live_work(runtime) {
+        invalidate_speech(runtime, "detection is not confirmed running");
     }
 }
 
 fn apply_detection_snapshot(runtime: &mut Runtime, snapshot: Snapshot) -> Result<(), String> {
     expire_detection(runtime);
-    if matches!(
-        &snapshot.state,
-        BoardState::Observed {
-            connected: Some(false),
-            ..
-        }
-    ) {
-        invalidate_speech(runtime, "observed board disconnect");
-    }
     let snapshot = normalize_snapshot(snapshot);
     if snapshot.availability != Availability::Available || observed_running(&snapshot).is_none() {
+        reconcile_speech_observation(runtime, &snapshot);
         runtime.observation_at = None;
         if let Some(operation) = runtime.detection.as_mut() {
             operation.fresh_definitive_observation = None;
@@ -524,7 +540,7 @@ fn apply_detection_snapshot(runtime: &mut Runtime, snapshot: Snapshot) -> Result
         return report(runtime);
     }
     runtime.observation_at = Some(detection_now());
-
+    reconcile_speech_observation(runtime, &snapshot);
     runtime.snapshot = snapshot;
     runtime.detection_readback = None;
     let desired = runtime
@@ -554,24 +570,7 @@ fn apply_detection_snapshot(runtime: &mut Runtime, snapshot: Snapshot) -> Result
 }
 
 fn apply_detection_readback(runtime: &mut Runtime, snapshot: Snapshot) -> Result<(), String> {
-    apply_detection_snapshot(runtime, snapshot)?;
-    if observed_running(&runtime.snapshot) == Some(false)
-        && (runtime.speech_in_flight.is_some()
-            || runtime
-                .announcement_session
-                .pending_total_deadline()
-                .is_some()
-            || matches!(
-                runtime.announcement_session.diagnostics().readiness,
-                autodarts_core::AnnouncementReadiness::Collecting { .. }
-                    | autodarts_core::AnnouncementReadiness::AwaitingRemoval
-                    | autodarts_core::AnnouncementReadiness::AwaitingClear
-            ))
-    {
-        invalidate_speech(runtime, "observed detection stop");
-        reopen_speech(runtime);
-    }
-    Ok(())
+    apply_detection_snapshot(runtime, snapshot)
 }
 
 fn on_detection_timer(runtime: &mut Runtime, id: &str) {
@@ -639,6 +638,7 @@ fn begin_detection(runtime: &mut Runtime, desired: bool) -> Result<(), String> {
                 operation.dispatch = dispatch;
             }
             if !desired && dispatch == DetectionDispatch::Acknowledged {
+                runtime.speech_running_observed = false;
                 invalidate_speech(runtime, "detection stop acknowledged");
             }
             runtime.detection_readback = None;
@@ -1071,14 +1071,61 @@ fn on_deadline_timer(runtime: &mut Runtime, id: &str) {
     }
     ui::invalidate("board");
 }
-fn speech_status_line(runtime: &Runtime) -> String {
-    let mut parts = vec![if !runtime.speech_enabled {
-        "Speech stream disabled".to_string()
-    } else if runtime.speech_session.is_some() {
-        "Speech stream open".to_string()
+fn observation_connection_text(runtime: &Runtime) -> String {
+    if runtime.websocket_id.is_none() {
+        return "closed".into();
+    }
+    let status = runtime.websocket_status.as_deref().unwrap_or_default();
+    if status.contains("connected") {
+        "connected".into()
+    } else if status.contains("connecting") {
+        "connecting".into()
+    } else if status.contains("reconnecting") {
+        "reconnecting".into()
+    } else if status.contains("failed") {
+        "failed".into()
+    } else if status.contains("unavailable") {
+        "unavailable".into()
     } else {
-        "Speech stream unavailable".to_string()
-    }];
+        "open".into()
+    }
+}
+
+fn detection_state_text(snapshot: &Snapshot) -> &'static str {
+    if snapshot.availability != Availability::Available {
+        return match snapshot
+            .diagnostic
+            .as_ref()
+            .map(|error| error.kind.as_str())
+        {
+            Some("contradictory_starting") => "Starting",
+            Some("disconnected") => "disconnected",
+            _ => "unknown",
+        };
+    }
+    if is_starting(snapshot) {
+        "Starting"
+    } else {
+        match observed_running(snapshot) {
+            Some(true) => "running",
+            Some(false) => "stopped",
+            None => "unknown",
+        }
+    }
+}
+fn speech_status_line(runtime: &Runtime) -> String {
+    let session = if runtime.speech_session.is_some() {
+        "open"
+    } else if !runtime.speech_enabled {
+        "closed (Speech stream disabled)"
+    } else if !runtime.announcements.enabled {
+        "closed (announcements disabled)"
+    } else if !runtime.speech_running_observed {
+        "closed (awaiting confirmed running detection)"
+    } else {
+        "closed (speech host unavailable)"
+    };
+    let mut parts = vec![format!("Speech session: {session}")];
     if let Some(error) = &runtime.speech_submission_error {
         parts.push(error.clone());
     }
@@ -1249,7 +1296,8 @@ fn invalidate_speech(runtime: &mut Runtime, reason: &str) {
 }
 
 fn reopen_speech(runtime: &mut Runtime) {
-    if !(runtime.announcements.enabled
+    if !(runtime.speech_running_observed
+        && runtime.announcements.enabled
         && runtime.speech_enabled
         && runtime.speech_session.is_none())
     {
@@ -1274,6 +1322,7 @@ fn reopen_speech(runtime: &mut Runtime) {
 
 fn stop_runtime() -> Option<Runtime> {
     let mut runtime = RUNTIME.with(|slot| slot.borrow_mut().take())?;
+    runtime.speech_running_observed = false;
     cancel_detection(&mut runtime);
     let conn = runtime.websocket_id.take();
     invalidate_speech(&mut runtime, "stop");
@@ -1334,20 +1383,8 @@ impl Guest for Plugin {
         } else {
             (None, Some("Board event stream disabled".into()))
         };
-        let mut speech_open_error = None;
-        let speech_session = if announcements_enabled && speech_enabled {
-            match speech_stream::open(&config.room) {
-                Ok(session) => Some(session),
-                Err(error) => {
-                    let message = format!("Speech stream open failed: {error:?}");
-                    log::log(log::Level::Warn, &message);
-                    speech_open_error = Some(message);
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let speech_open_error = None;
+        let speech_session = None;
         RUNTIME.with(|slot| {
             *slot.borrow_mut() = Some(Runtime {
                 announcement_session: autodarts_core::AnnouncementSession::new(
@@ -1370,6 +1407,7 @@ impl Guest for Plugin {
                 detection_readback: None,
                 speech_session,
                 speech_reopen_pending: false,
+                speech_running_observed: false,
                 speech_generation: SPEECH_GENERATION.with(std::cell::Cell::get),
                 speech_pending: BTreeMap::new(),
                 speech_in_flight: None,
@@ -1517,6 +1555,8 @@ impl Guest for Plugin {
             policy_event,
             speech_status,
             speech_enabled,
+            observation_connection,
+            detection_state,
             websocket_status,
         ) = RUNTIME.with(|slot| {
             slot.borrow()
@@ -1531,6 +1571,8 @@ impl Guest for Plugin {
                         runtime.policy_event,
                         speech_status_line(runtime),
                         runtime.speech_enabled,
+                        observation_connection_text(runtime),
+                        detection_state_text(&runtime.snapshot),
                         runtime.websocket_status.clone(),
                     )
                 })
@@ -1555,6 +1597,8 @@ impl Guest for Plugin {
                     None => "not selected",
                 }
             ),
+            format!("Observation connection: {observation_connection}"),
+            format!("Detection state: {detection_state}"),
             format!("Announcement room: {}", announcements.room),
             format!(
                 "Policy readiness: {}",
@@ -1625,25 +1669,20 @@ impl Guest for Plugin {
             }
             match status {
                 bindings::niles::integration::websocket::ConnectionStatus::Connected => {
-                    if runtime.speech_in_flight.is_some()
-                        || !runtime.speech_queue.is_empty()
-                        || runtime.deadline_timer.is_some()
-                    {
-                        invalidate_speech(runtime, "Board event reconnect");
-                    } else {
-                        runtime.announcement_session.connection_reset();
-                    }
+                    runtime.speech_running_observed = false;
+                    invalidate_speech(runtime, "Board event reconnect");
                     runtime.policy_event = None;
-                    reopen_speech(runtime);
                     runtime.websocket_status = Some("Board event stream connected".into());
                 }
                 bindings::niles::integration::websocket::ConnectionStatus::Disconnected(reason) => {
+                    runtime.speech_running_observed = false;
                     invalidate_speech(runtime, "Board event disconnect");
                     runtime.policy_event = None;
                     runtime.websocket_status =
                         Some(format!("Board event stream reconnecting: {reason}"));
                 }
                 bindings::niles::integration::websocket::ConnectionStatus::Failed(kind) => {
+                    runtime.speech_running_observed = false;
                     invalidate_speech(runtime, "Board event failure");
                     runtime.policy_event = None;
                     let reason = match kind {
@@ -1661,9 +1700,9 @@ impl Guest for Plugin {
                     runtime.websocket_status = Some(format!("Board event stream failed: {reason}"));
                 }
                 bindings::niles::integration::websocket::ConnectionStatus::Overflow(count) => {
+                    runtime.speech_running_observed = false;
                     invalidate_speech(runtime, "Board event overflow");
                     runtime.policy_event = None;
-                    reopen_speech(runtime);
                     runtime.websocket_status =
                         Some(format!("Board event stream overflow ({count})"));
                 }

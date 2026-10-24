@@ -23,6 +23,30 @@ The preceding implementation revision recorded these results (50 core and 55 com
 
 No live device write, installation, release publication, LLM call, or live voice/audible test is part of this verification.
 
+## JVL-16 implementation
+
+### Changed
+
+- `component/src/lib.rs`: commentary opening now requires a validated current `running` observation. Stopped, Starting, unavailable/disconnected, reconnect, overflow, stop, reconfiguration, and stale lifecycle paths clear authorization and reuse the existing invalidation/close helpers. Board observation remains connected; no automatic detection start was added. Rendered diagnostics now separate observation connection, detection state, speech session state, settings, and core baseline readiness.
+- `component/src/tests.rs`: added `jvl16_` focused coverage for idempotent stopped-session closure, preserved observation connection/no wake command, Starting and stale-dart recovery, pending-total cancellation, old timer/callback suppression, and updated eager-open assumptions.
+- `docs/plan.md` and `README.md`: documented observation-gated session lifetime and offline evidence boundaries.
+
+### Executed checks
+
+- `cargo test --manifest-path component/Cargo.toml --lib jvl16_` — passed (3 tests).
+- `cargo test --manifest-path component/Cargo.toml --lib stopped_` — passed (6 tests).
+- `cargo test --manifest-path component/Cargo.toml --lib` — passed (59 tests).
+- `cargo run -p autodarts-core --example announcement_replay` — passed.
+- Parsed equality comparison for all preserved `.harness/artifacts/board-manager-*.json` fixtures — passed.
+- `bash scripts/verify.sh --quick` — passed.
+- `cargo fmt --all` — completed.
+
+The maintained full chain, pinned-host lifecycle proof, and final exact-head evidence remain final-gate checks and are not claimed here until executed on the committed candidate.
+
+### Remaining limitations
+
+No real-board access, deployed Niles access, installation, service change, audible test, release, push, or PR publication was performed. `Accepted`/transport outcomes remain distinct from audible delivery. The pinned JVL-15 `command_connection` dispatch-evidence limitation remains unchanged.
+
 ## Deep-review corrections
 
 - Accelerated detection readback previously published a stopped observation without cancelling queued announcements during a pending start. The new callback regression reproduced an extra stale submission before the fix and passes after both HTTP polling paths share the existing cancellation policy. WebSocket invalidation remains on its existing ingress path.
