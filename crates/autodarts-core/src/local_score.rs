@@ -109,7 +109,17 @@ pub fn parse_state(value: &Value) -> Result<LocalState, &'static str> {
         return Err("state must be an object");
     }
     let running = optional_bool(value, "running")?;
-    let takeout = optional_takeout(value)?;
+    let connected = optional_bool(value, "connected")?;
+    let status = optional_text(value, "status")?;
+    let event = optional_text(value, "event")?;
+    // Starting may report running=true before detection is actually ready.
+    let running =
+        if connected == Some(false) || status == Some("Starting") || event == Some("Starting") {
+            Some(false)
+        } else {
+            running
+        };
+    let takeout = optional_takeout(event, status);
     let num_throws = match value.get("numThrows") {
         Some(Value::Number(n)) => {
             let count = n
@@ -140,11 +150,17 @@ pub fn parse_state(value: &Value) -> Result<LocalState, &'static str> {
                     .and_then(Value::as_u64)
                     .ok_or("invalid multiplier")?;
                 let score = if multiplier == 0 {
-                    let expected_name = format!("M{number}");
                     let valid_miss = (1..=20).contains(&number)
                         && segment.get("bed").and_then(Value::as_str) == Some("Outside")
-                        && segment.get("name").and_then(Value::as_str)
-                            == Some(expected_name.as_str());
+                        && segment
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .and_then(|name| name.strip_prefix('M'))
+                            .is_some_and(|digits| {
+                                !digits.starts_with('0')
+                                    && digits.bytes().all(|byte| byte.is_ascii_digit())
+                                    && digits.parse::<u64>().ok() == Some(number)
+                            });
                     if !valid_miss {
                         return Err("invalid outside miss");
                     }
@@ -186,15 +202,20 @@ fn optional_bool(value: &Value, key: &str) -> Result<Option<bool>, &'static str>
         _ => Err("invalid boolean state"),
     }
 }
-fn optional_takeout(value: &Value) -> Result<Option<TakeoutEvidence>, &'static str> {
-    match value.get("event") {
+fn optional_text<'a>(value: &'a Value, key: &str) -> Result<Option<&'a str>, &'static str> {
+    match value.get(key) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(event)) => Ok(match event.as_str() {
-            "Takeout started" => Some(TakeoutEvidence::Started),
-            "Takeout finished" => Some(TakeoutEvidence::Finished),
-            _ => None,
-        }),
-        Some(_) => Err("invalid state event"),
+        Some(Value::String(text)) => Ok(Some(text)),
+        Some(_) => Err("invalid text state"),
+    }
+}
+
+fn optional_takeout(event: Option<&str>, status: Option<&str>) -> Option<TakeoutEvidence> {
+    match event {
+        Some("Takeout finished") => Some(TakeoutEvidence::Finished),
+        Some("Takeout started") => Some(TakeoutEvidence::Started),
+        _ if status == Some("Takeout in progress") => Some(TakeoutEvidence::Started),
+        _ => None,
     }
 }
 pub fn parse_envelope(value: &Value) -> Result<LocalEvent, &'static str> {
@@ -242,6 +263,7 @@ pub struct LocalJourney {
     announced: usize,
     tainted: bool,
     removal_seen: bool,
+    takeout_active: bool,
     removal_candidate: Option<Vec<u8>>,
     deadline: Option<RoundToken>,
     in_flight: BTreeSet<String>,
@@ -263,6 +285,7 @@ impl LocalJourney {
         self.announced = 0;
         self.tainted = false;
         self.removal_seen = false;
+        self.takeout_active = false;
         self.removal_candidate = None;
         self.deadline = None;
         self.last_event = None;
@@ -318,7 +341,16 @@ impl LocalJourney {
             return JourneyResult::Suppressed;
         }
         self.deadline = None;
-        self.removal(mode, room, delivery)
+        let result = self.complete(mode, room, delivery);
+        self.last_event = Some(AnnouncementEvent {
+            disposition: AnnouncementDisposition::Processed,
+            reason: if matches!(result, JourneyResult::DeliveryFailed(_)) {
+                AnnouncementReason::DeliveryFailure
+            } else {
+                AnnouncementReason::TotalAccepted
+            },
+        });
+        result
     }
     pub fn ingest<D: AnnouncementDelivery>(
         &mut self,
@@ -385,15 +417,31 @@ impl LocalJourney {
                 takeout_full: Some(true),
                 ..
             } => self.removal(mode, room, delivery),
+            LocalEvent::Motion {
+                takeout_partial: Some(false),
+                takeout_full: Some(false),
+            } => {
+                self.takeout_active = false;
+                JourneyResult::Suppressed
+            }
             LocalEvent::Motion { .. } => JourneyResult::Suppressed,
             LocalEvent::State(state) => {
-                if state.takeout == Some(TakeoutEvidence::Finished)
-                    && !self.removal_seen
-                    && (!self.darts.is_empty() || self.removal_candidate.is_some())
+                let takeout = state.takeout;
+                let result = self.state(state, mode, room, delivery);
+                if takeout.is_some()
+                    && !matches!(
+                        result,
+                        JourneyResult::Invalid | JourneyResult::DeliveryFailed(_)
+                    )
                 {
-                    self.removal(mode, room, delivery)
+                    let total = self.removal(mode, room, delivery);
+                    if total == JourneyResult::Suppressed {
+                        result
+                    } else {
+                        total
+                    }
                 } else {
-                    self.state(state, mode, room, delivery)
+                    result
                 }
             }
         };
@@ -494,28 +542,14 @@ impl LocalJourney {
         }
         if self.phase != Some(Phase::Collecting) {
             if self.phase == Some(Phase::AwaitingClear) {
-                if self.removal_candidate.is_some() {
-                    let old = self
-                        .previous
-                        .as_ref()
-                        .and_then(|previous| previous.throws.as_ref());
-                    if let (Some(old), Some(new)) = (old, state.throws.as_ref())
-                        && old.ends_with(new)
-                    {
-                        self.previous = Some(state);
-                        return JourneyResult::Suppressed;
-                    }
-                    return self.reject_input();
-                }
                 let old = self.previous.as_ref().and_then(|s| s.throws.as_ref());
                 if let (Some(old), Some(new)) = (old, state.throws.as_ref())
-                    && new.len() < old.len()
+                    && old.ends_with(new)
                 {
-                    self.removal_candidate = None;
-                    self.tainted = true;
                     self.previous = Some(state);
                     return JourneyResult::Suppressed;
                 }
+                return self.reject_input();
             }
             self.previous = Some(state.clone());
             if state.throws.as_ref().is_some_and(Vec::is_empty) && state.num_throws == Some(0) {
@@ -622,6 +656,19 @@ impl LocalJourney {
         room: &str,
         delivery: &mut D,
     ) -> JourneyResult {
+        if self.takeout_active {
+            return JourneyResult::Suppressed;
+        }
+        self.takeout_active = true;
+        self.complete(mode, room, delivery)
+    }
+
+    fn complete<D: AnnouncementDelivery>(
+        &mut self,
+        mode: AnnouncementMode,
+        room: &str,
+        delivery: &mut D,
+    ) -> JourneyResult {
         if self.removal_seen {
             return JourneyResult::Suppressed;
         }
@@ -657,7 +704,7 @@ impl LocalJourney {
         }
         // The explicit boundary is consumed even when submission fails. A clear
         // already observed belongs to this collection, not the next one.
-        let result = deliver(delivery, room, &total.to_string(), key);
+        // Consume completion before crossing the injectable delivery boundary.
         self.serial = self.serial.saturating_add(1);
         if clear_before_marker {
             self.phase = Some(Phase::Collecting);
@@ -671,6 +718,7 @@ impl LocalJourney {
             self.removal_seen = true;
             self.phase = Some(Phase::AwaitingClear);
         }
+        let result = deliver(delivery, room, &total.to_string(), key);
         match result {
             Ok(()) => JourneyResult::Total(Some(total)),
             Err(error) => JourneyResult::DeliveryFailed(error),
@@ -740,6 +788,12 @@ mod tests {
             takeout_full: None,
         }
     }
+    fn neutral() -> LocalEvent {
+        LocalEvent::Motion {
+            takeout_partial: Some(false),
+            takeout_full: Some(false),
+        }
+    }
     fn full() -> LocalEvent {
         LocalEvent::Motion {
             takeout_partial: Some(false),
@@ -752,6 +806,7 @@ mod tests {
         let mut j = LocalJourney::default();
         let mut d = RecordingDelivery::default();
         for _ in 0..3 {
+            ingest(&mut j, neutral(), &mut d);
             ingest(&mut j, empty(), &mut d);
             ingest(&mut j, state(&[20]), &mut d);
             assert_eq!(
@@ -863,6 +918,7 @@ mod tests {
                 AnnouncementReadiness::Collecting { dart_count: 0 }
             );
             j.ingest(true, mode, ROOM, state(&[7]), &mut d);
+            j.ingest(true, mode, ROOM, neutral(), &mut d);
             assert_eq!(
                 j.ingest(true, mode, ROOM, full(), &mut d),
                 JourneyResult::Total(Some(7))
@@ -940,6 +996,7 @@ mod tests {
                 JourneyResult::Suppressed
             );
             j.ingest(true, mode, ROOM, state(&[7]), &mut d);
+            j.ingest(true, mode, ROOM, neutral(), &mut d);
             assert_eq!(
                 j.ingest(true, mode, ROOM, full(), &mut d),
                 JourneyResult::Total(Some(7))
@@ -985,6 +1042,7 @@ mod tests {
                     JourneyResult::Suppressed
                 );
                 j.ingest(true, mode, ROOM, empty(), &mut d);
+                j.ingest(true, mode, ROOM, neutral(), &mut d);
                 j.ingest(true, mode, ROOM, state(&[5]), &mut d);
                 assert_eq!(
                     j.ingest(true, mode, ROOM, full(), &mut d),
@@ -1117,6 +1175,7 @@ mod tests {
         let mut j = LocalJourney::default();
         let mut d = RecordingDelivery::default();
         for completed in 0..3 {
+            j.ingest(true, AnnouncementMode::TotalOnly, ROOM, neutral(), &mut d);
             j.ingest(
                 true,
                 AnnouncementMode::TotalOnly,
@@ -1167,6 +1226,13 @@ mod tests {
         let mut j = LocalJourney::default();
         let mut unavailable = UnavailableDelivery;
         for _ in 0..300 {
+            j.ingest(
+                true,
+                AnnouncementMode::TotalOnly,
+                ROOM,
+                neutral(),
+                &mut unavailable,
+            );
             j.ingest(
                 true,
                 AnnouncementMode::TotalOnly,
@@ -1308,6 +1374,8 @@ mod tests {
             json!({"numThrows":1,"throws":[{"segment":{"name":"M19","number":19,"multiplier":0}}]}),
             json!({"numThrows":1,"throws":[{"segment":{"name":"M19","number":19,"multiplier":0,"bed":"Single"}}]}),
             json!({"numThrows":1,"throws":[{"segment":{"name":"M019","number":19,"multiplier":0,"bed":"Outside"}}]}),
+            json!({"numThrows":1,"throws":[{"segment":{"name":"M+19","number":19,"multiplier":0,"bed":"Outside"}}]}),
+            json!({"numThrows":1,"throws":[{"segment":{"name":"M18","number":19,"multiplier":0,"bed":"Outside"}}]}),
             json!({"numThrows":1,"throws":[{"segment":{"name":"M0","number":0,"multiplier":0,"bed":"Outside"}}]}),
             json!({"numThrows":1,"throws":[{"segment":{"name":"M25","number":25,"multiplier":0,"bed":"Outside"}}]}),
             json!({"numThrows":1,"throws":[{"segment":{"name":"M19","number":19.0,"multiplier":0,"bed":"Outside"}}]}),
@@ -1327,7 +1395,7 @@ mod tests {
     }
 
     #[test]
-    fn third_dart_arms_one_deadline_and_expiry_completes_zero_total_once() {
+    fn third_dart_arms_one_deadline_and_expiry_completes_total_once() {
         for mode in [
             AnnouncementMode::EachDartThenTotal,
             AnnouncementMode::TotalOnly,

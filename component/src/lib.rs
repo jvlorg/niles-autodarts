@@ -45,6 +45,7 @@ use bindings::*;
 struct Plugin;
 export!(Plugin);
 thread_local! { static RUNTIME: RefCell<Option<Runtime>> = const { RefCell::new(None) }; }
+thread_local! { static SPEECH_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
 struct Runtime {
     announcements: autodarts_core::AnnouncementSettings,
     announcement_session: autodarts_core::AnnouncementSession,
@@ -285,6 +286,30 @@ fn poll_now() -> Result<(), String> {
             .as_mut()
             .ok_or_else(|| "Autodarts is not configured.".to_string())?;
         runtime.snapshot = poll(&runtime.config, &mut HostTransport);
+        if matches!(
+            runtime.snapshot.state,
+            BoardState::Observed {
+                running: Some(false),
+                ..
+            } | BoardState::Observed {
+                connected: Some(false),
+                ..
+            }
+        ) && (runtime.speech_in_flight.is_some()
+            || runtime
+                .announcement_session
+                .pending_total_deadline()
+                .is_some()
+            || matches!(
+                runtime.announcement_session.diagnostics().readiness,
+                autodarts_core::AnnouncementReadiness::Collecting { .. }
+                    | autodarts_core::AnnouncementReadiness::AwaitingRemoval
+                    | autodarts_core::AnnouncementReadiness::AwaitingClear
+            ))
+        {
+            invalidate_speech(runtime, "observed detection stop");
+            reopen_speech(runtime);
+        }
         report(runtime)
     })
 }
@@ -331,37 +356,38 @@ fn connect_websocket(config: &Config) -> Result<u32, String> {
 
 /// The bounded event ingress shared by host callbacks and synthetic tests.
 fn ingest_announcement_json(json: &[u8]) -> autodarts_core::local_score::JourneyResult {
-    let has_pending = RUNTIME.with(|slot| {
-        slot.borrow().as_ref().is_some_and(|runtime| {
-            runtime.speech_reopen_pending
-                || runtime.speech_in_flight.is_some()
-                || !runtime.speech_queue.is_empty()
-        })
-    });
-    if has_pending {
-        poll_speech();
-    }
     RUNTIME.with(|slot| {
         let mut slot = slot.borrow_mut();
         let Some(runtime) = slot.as_mut() else {
             return autodarts_core::local_score::JourneyResult::Suppressed;
         };
+        if runtime.speech_reopen_pending {
+            reopen_speech(runtime);
+        }
+        let mut overflowed = false;
         let mut delivery = SpeechDelivery {
             session: runtime.speech_session,
             generation: runtime.speech_generation,
             pending: &runtime.speech_pending,
             queue: &mut runtime.speech_queue,
             submission_error: &mut runtime.speech_submission_error,
+            overflowed: &mut overflowed,
         };
         let result = runtime
             .announcement_session
             .ingest_json(json, &mut delivery);
         runtime.policy_event = runtime.announcement_session.diagnostics().last_event;
-        if result == autodarts_core::local_score::JourneyResult::Invalid {
+        if overflowed {
+            invalidate_speech(runtime, "speech queue full");
+            runtime.speech_reopen_pending = true;
+        } else if result == autodarts_core::local_score::JourneyResult::Invalid {
             invalidate_speech(runtime, "invalid Board event");
             reopen_speech(runtime);
         } else {
-            pump_speech(runtime);
+            if result == autodarts_core::local_score::JourneyResult::Baseline {
+                reopen_speech(runtime);
+            }
+            collect_speech(runtime);
             reconcile_deadline_timer(runtime);
         }
         result
@@ -391,6 +417,7 @@ struct SpeechDelivery<'a> {
     pending: &'a BTreeMap<u64, SpeechRequest>,
     queue: &'a mut VecDeque<SpeechRequest>,
     submission_error: &'a mut Option<String>,
+    overflowed: &'a mut bool,
 }
 impl autodarts_core::AnnouncementDelivery for SpeechDelivery<'_> {
     fn deliver(
@@ -402,6 +429,7 @@ impl autodarts_core::AnnouncementDelivery for SpeechDelivery<'_> {
             return Err(autodarts_core::DeliveryError::Unavailable);
         }
         if self.pending.len() + self.queue.len() >= MAX_PENDING_SPEECH {
+            *self.overflowed = true;
             *self.submission_error = Some("Speech request queue full; submission rejected".into());
             return Err(autodarts_core::DeliveryError::Failed(
                 "speech request queue full".into(),
@@ -457,7 +485,11 @@ fn schedule_speech_progress(runtime: &mut Runtime) {
     match timers::after(&id, 1) {
         Ok(()) => runtime.speech_progress_timer = Some(id),
         Err(error) => {
-            runtime.speech_poll_error = Some(format!("Speech progress timer failed: {error:?}"));
+            invalidate_speech(runtime, "speech progress timer failure");
+            runtime.speech_submission_error = Some(format!(
+                "Speech progress timer failed: {error:?}; speech requests discarded"
+            ));
+            runtime.speech_reopen_pending = true;
         }
     }
 }
@@ -504,45 +536,53 @@ fn poll_speech() {
     RUNTIME.with(|slot| {
         let mut slot = slot.borrow_mut();
         let Some(runtime) = slot.as_mut() else { return };
-        if runtime.speech_reopen_pending {
-            reopen_speech(runtime);
-        }
-        let Some(session) = runtime.speech_session else {
-            return;
-        };
-        let current = runtime.speech_in_flight;
-        match speech_stream::poll(session) {
-            Ok(statuses) => {
-                runtime.speech_poll_error = None;
-                for item in statuses {
-                    let outcome = map_speech_outcome(&item.outcome);
-                    if outcome == SpeechOutcome::Pending || Some(item.request) != current {
-                        continue;
-                    }
-                    if let Some(request) = runtime.speech_pending.remove(&item.request) {
-                        runtime.speech_in_flight = None;
-                        remember_completion(
-                            runtime,
-                            SpeechCompletion {
-                                generation: request.generation,
-                                host_request: item.request,
-                                logical_key: request.logical_key,
-                                kind: request.kind,
-                                text: request.text,
-                                outcome,
-                            },
-                        );
-                    }
-                }
-                pump_speech(runtime);
-                schedule_speech_progress(runtime);
-            }
-            Err(error) => {
-                runtime.speech_poll_error = Some(format!("Speech poll failed: {error:?}"));
-                schedule_speech_progress(runtime);
-            }
-        }
+        collect_speech(runtime);
     });
+}
+
+fn collect_speech(runtime: &mut Runtime) {
+    if runtime.speech_reopen_pending {
+        reopen_speech(runtime);
+    }
+    let Some(session) = runtime.speech_session else {
+        return;
+    };
+    if runtime.speech_in_flight.is_none() {
+        pump_speech(runtime);
+        return;
+    }
+    let current = runtime.speech_in_flight;
+    match speech_stream::poll(session) {
+        Ok(statuses) => {
+            runtime.speech_poll_error = None;
+            for item in statuses {
+                let outcome = map_speech_outcome(&item.outcome);
+                if outcome == SpeechOutcome::Pending || Some(item.request) != current {
+                    continue;
+                }
+                if let Some(request) = runtime.speech_pending.remove(&item.request) {
+                    runtime.speech_in_flight = None;
+                    remember_completion(
+                        runtime,
+                        SpeechCompletion {
+                            generation: request.generation,
+                            host_request: item.request,
+                            logical_key: request.logical_key,
+                            kind: request.kind,
+                            text: request.text,
+                            outcome,
+                        },
+                    );
+                }
+            }
+            pump_speech(runtime);
+            schedule_speech_progress(runtime);
+        }
+        Err(error) => {
+            runtime.speech_poll_error = Some(format!("Speech poll failed: {error:?}"));
+            schedule_speech_progress(runtime);
+        }
+    }
 }
 fn cancel_deadline_timer(runtime: &mut Runtime) {
     if let Some((_, id)) = runtime.deadline_timer.take() {
@@ -579,6 +619,7 @@ fn reconcile_deadline_timer(runtime: &mut Runtime) {
                 format!("Total deadline timer failed: {error:?}; speech requests discarded");
             invalidate_speech(runtime, "total deadline timer failure");
             runtime.speech_submission_error = Some(message);
+            runtime.speech_reopen_pending = true;
         }
     }
 }
@@ -591,23 +632,26 @@ fn on_deadline_timer(runtime: &mut Runtime, id: &str) {
         runtime.deadline_timer = Some((token, registered));
         return;
     }
-    let Some(mode) = runtime.announcements.mode else {
-        return;
-    };
+    let mut overflowed = false;
     let mut delivery = SpeechDelivery {
         session: runtime.speech_session,
         generation: runtime.speech_generation,
         pending: &runtime.speech_pending,
         queue: &mut runtime.speech_queue,
         submission_error: &mut runtime.speech_submission_error,
+        overflowed: &mut overflowed,
     };
     runtime
         .announcement_session
         .on_total_deadline(token, &mut delivery);
     runtime.policy_event = runtime.announcement_session.diagnostics().last_event;
-    let _ = mode;
-    pump_speech(runtime);
-    reconcile_deadline_timer(runtime);
+    if overflowed {
+        invalidate_speech(runtime, "speech queue full");
+        runtime.speech_reopen_pending = true;
+    } else {
+        collect_speech(runtime);
+        reconcile_deadline_timer(runtime);
+    }
 }
 fn speech_status_line(runtime: &Runtime) -> String {
     let mut parts = vec![if !runtime.speech_enabled {
@@ -625,6 +669,9 @@ fn speech_status_line(runtime: &Runtime) -> String {
     }
     if !runtime.speech_pending.is_empty() {
         parts.push(format!("Speech pending: {}", runtime.speech_pending.len()));
+    }
+    if !runtime.speech_queue.is_empty() {
+        parts.push(format!("Speech queued: {}", runtime.speech_queue.len()));
     }
     if !runtime.speech_history.is_empty() {
         let recent = runtime
@@ -734,7 +781,11 @@ fn invalidate_speech(runtime: &mut Runtime, reason: &str) {
     cancel_deadline_timer(runtime);
     cancel_speech_progress(runtime);
     runtime.announcement_session.connection_reset();
-    runtime.speech_generation = runtime.speech_generation.saturating_add(1);
+    runtime.speech_generation = SPEECH_GENERATION.with(|generation| {
+        let next = generation.get().saturating_add(1);
+        generation.set(next);
+        next
+    });
     let pending = std::mem::take(&mut runtime.speech_pending);
     for (host_request, request) in pending {
         remember_completion(
@@ -889,9 +940,7 @@ impl Guest for Plugin {
                 command_status: None,
                 speech_session,
                 speech_reopen_pending: false,
-                speech_generation: previous
-                    .as_ref()
-                    .map_or(0, |runtime| runtime.speech_generation),
+                speech_generation: SPEECH_GENERATION.with(std::cell::Cell::get),
                 speech_pending: BTreeMap::new(),
                 speech_in_flight: None,
                 speech_queue: VecDeque::new(),
@@ -987,8 +1036,11 @@ impl Guest for Plugin {
             };
             runtime.snapshot = observation;
             runtime.command_status = Some(command_status);
-            if matches!(outcome, DetectionResult::Confirmed(false)) {
-                invalidate_speech(runtime, "detection stopped");
+            if matches!(
+                outcome,
+                DetectionResult::Confirmed(false) | DetectionResult::Pending { desired: false, .. }
+            ) {
+                invalidate_speech(runtime, "detection stop acknowledged");
             } else if matches!(outcome, DetectionResult::Confirmed(true)) {
                 reopen_speech(runtime);
             }
@@ -1002,10 +1054,10 @@ impl Guest for Plugin {
     }
     fn on_timer(id: String) {
         if id == "poll" {
-            poll_speech();
             if let Err(error) = poll_now() {
                 log::log(log::Level::Warn, &error);
             }
+            poll_speech();
             ui::invalidate("board");
         } else if id.starts_with("total-deadline:") {
             RUNTIME.with(|slot| {
@@ -1016,7 +1068,11 @@ impl Guest for Plugin {
         } else if id.starts_with("speech-progress:") {
             let current = RUNTIME.with(|slot| {
                 slot.borrow_mut().as_mut().is_some_and(|runtime| {
-                    runtime.speech_progress_timer.take().as_deref() == Some(id.as_str())
+                    if runtime.speech_progress_timer.as_deref() != Some(id.as_str()) {
+                        return false;
+                    }
+                    runtime.speech_progress_timer = None;
+                    true
                 })
             });
             if current {
@@ -1142,7 +1198,14 @@ impl Guest for Plugin {
             }
             match status {
                 bindings::niles::integration::websocket::ConnectionStatus::Connected => {
-                    runtime.announcement_session.connection_reset();
+                    if runtime.speech_in_flight.is_some()
+                        || !runtime.speech_queue.is_empty()
+                        || runtime.deadline_timer.is_some()
+                    {
+                        invalidate_speech(runtime, "Board event reconnect");
+                    } else {
+                        runtime.announcement_session.connection_reset();
+                    }
                     runtime.policy_event = None;
                     reopen_speech(runtime);
                     runtime.websocket_status = Some("Board event stream connected".into());

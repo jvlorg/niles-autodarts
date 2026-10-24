@@ -24,6 +24,9 @@ const DART_TWO: &str = r#"{"type":"state","data":{"running":true,"numThrows":2,"
 const DART_THREE: &str = r#"{"type":"state","data":{"running":true,"numThrows":3,"throws":[{"segment":{"number":20,"multiplier":1}},{"segment":{"number":5,"multiplier":1}},{"segment":{"number":1,"multiplier":1}}]}}"#;
 const PARTIAL: &str = r#"{"type":"motion_state","data":{"isTakeoutPartial":true}}"#;
 const FULL: &str = r#"{"type":"motion_state","data":{"isTakeoutFull":true}}"#;
+const NEUTRAL: &str =
+    r#"{"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}}"#;
+const STOPPED: &str = r#"{"type":"state","data":{"running":false,"numThrows":0}}"#;
 const WAIT: Duration = Duration::from_secs(15);
 type Prepared = (String, String);
 type Socket = WebSocketStream<TcpStream>;
@@ -492,6 +495,25 @@ impl Proof {
         )
     }
 
+    async fn policy_event(&self, readiness: &str, reason: &str) {
+        tokio::time::timeout(WAIT, async {
+            loop {
+                let surface = self
+                    .runtime
+                    .render("autodarts", "board", Context::default())
+                    .await
+                    .unwrap();
+                let rendered = format!("{surface:?}");
+                if rendered.contains(readiness) && rendered.contains(reason) {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("guest processes the expected policy boundary");
+    }
+
     async fn finish(self, label: &str, forwarded: usize) {
         tokio::time::timeout(WAIT, async {
             loop {
@@ -525,16 +547,7 @@ impl Proof {
     }
 }
 
-fn fixture_frames(capture: bool) -> Vec<String> {
-    let source = if capture {
-        include_str!(
-            "../../crates/autodarts-core/tests/fixtures/board-manager-jvl14-three-round-reduced-capture.json"
-        )
-    } else {
-        include_str!(
-            "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-synthetic-continuation.json"
-        )
-    };
+fn fixture_frames(source: &str) -> Vec<String> {
     let envelopes: Vec<serde_json::Value> =
         serde_json::from_str(source).expect("fixture must be a JSON array");
     envelopes
@@ -545,7 +558,9 @@ fn fixture_frames(capture: bool) -> Vec<String> {
 
 async fn captured_replay(mode: &str, expected: &[&str], label: &str) {
     let (proof, mut socket) = Proof::start(mode).await;
-    let capture = fixture_frames(true);
+    let capture = fixture_frames(include_str!(
+        "../../crates/autodarts-core/tests/fixtures/board-manager-jvl14-three-round-reduced-capture.json"
+    ));
     send(&mut socket, &capture).await;
     for (index, _) in expected.iter().enumerate() {
         proof.host.submissions(index + 1).await;
@@ -559,6 +574,232 @@ async fn captured_replay(mode: &str, expected: &[&str], label: &str) {
     proof.host.assert_requests(&expected_requests);
     proof.output.assert_delivered("living_room", expected);
     proof.finish(label, expected.len()).await;
+    drop(socket);
+}
+
+async fn original_capture_and_continuation(mode: &str, expected: &[&str]) {
+    let (proof, mut socket) = Proof::start(mode).await;
+    let capture = fixture_frames(include_str!(
+        "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-reduced-capture.json"
+    ));
+    // JVL-13 starts mid-collection. Do not invent a baseline for its captured
+    // darts: only the captured clear makes the synthetic continuation eligible.
+    send(&mut socket, &capture[..12]).await;
+    proof
+        .policy_event(
+            "Policy readiness: collecting (0 darts)",
+            "BaselineEstablished",
+        )
+        .await;
+    assert!(proof.host.trace.lock().requests.is_empty());
+    assert!(proof.output.prepared.lock().is_empty());
+    send(&mut socket, &capture[12..]).await;
+    proof
+        .policy_event("Policy readiness: collecting (0 darts)", "InactiveMotion")
+        .await;
+    assert!(proof.host.trace.lock().requests.is_empty());
+    assert!(proof.output.prepared.lock().is_empty());
+
+    let continuation = fixture_frames(include_str!(
+        "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-synthetic-continuation.json"
+    ));
+    // These neutral frames are synthetic scheduling boundaries, not capture
+    // evidence. Consecutive removal episodes require a neutral motion sample.
+    send(&mut socket, &[NEUTRAL]).await;
+    send(&mut socket, &continuation[..7]).await;
+    send(&mut socket, &[NEUTRAL]).await;
+    send(&mut socket, &continuation[7..12]).await;
+    send(&mut socket, &[NEUTRAL]).await;
+    send(&mut socket, &continuation[12..]).await;
+    for index in 0..expected.len() {
+        proof.host.submissions(index + 1).await;
+        proof.output.allow_one();
+        proof.host.terminals(index + 1).await;
+    }
+    proof
+        .policy_event(
+            "Policy readiness: collecting (0 darts)",
+            "BaselineEstablished",
+        )
+        .await;
+    let requests: Vec<_> = expected
+        .iter()
+        .map(|text| (*text, SpeechOutcome::Delivered))
+        .collect();
+    proof.host.assert_requests(&requests);
+    proof.output.assert_delivered("living_room", expected);
+    proof
+        .finish(
+            &format!("jvl13-capture/synthetic-continuation/{mode}"),
+            expected.len(),
+        )
+        .await;
+    drop(socket);
+}
+
+async fn deadline_and_slow_rounds(mode: &str, active: bool) {
+    let (proof, mut socket) = Proof::start(mode).await;
+    let each_dart = mode == "each_dart_then_total";
+    send(&mut socket, &[BASELINE, DART, DART_TWO]).await;
+    if each_dart {
+        for count in 1..=2 {
+            proof.host.submissions(count).await;
+            proof.output.allow_one();
+            proof.host.terminals(count).await;
+        }
+    }
+    let third_sent = tokio::time::Instant::now();
+    send(&mut socket, &[DART_THREE]).await;
+    let held = if each_dart { 3 } else { 1 };
+    proof.output.wait_for(&proof.output.prepared, held).await;
+    if active {
+        proof.output.prepare_gate.add_permits(1);
+        proof.output.wait_for(&proof.output.entered, held).await;
+    }
+    // No takeout frame has been sent. This transition must come from the real
+    // compiled timer bridge, not a direct core expiry call or a guessed TTS wait.
+    proof
+        .policy_event("Policy readiness: awaiting clear", "TotalAccepted")
+        .await;
+    assert!(third_sent.elapsed() >= Duration::from_secs(1));
+    assert_eq!(proof.host.trace.lock().requests.len(), held);
+
+    // The final dart (or total in Total only) remains gated while the completed
+    // round clears and a two-dart next round completes by explicit takeout.
+    send(
+        &mut socket,
+        &[
+            PARTIAL, FULL, BASELINE, NEUTRAL, DART, DART_TWO, PARTIAL, BASELINE,
+        ],
+    )
+    .await;
+    proof
+        .policy_event(
+            "Policy readiness: collecting (0 darts)",
+            if each_dart {
+                "Speech queued: 4"
+            } else {
+                "Speech queued: 1"
+            },
+        )
+        .await;
+    assert_eq!(proof.host.trace.lock().requests.len(), held);
+    assert_eq!(proof.output.prepared.lock().len(), held);
+    assert_eq!(
+        proof.output.entered.lock().len(),
+        if active { held } else { held - 1 }
+    );
+    assert_eq!(proof.output.delivered.lock().len(), held - 1);
+    assert!(proof.host.trace.lock().requests[held - 1].outcome.is_none());
+
+    if active {
+        proof.output.deliver_gate.add_permits(1);
+    } else {
+        proof.output.allow_one();
+    }
+    proof.host.terminals(held).await;
+    let expected: &[&str] = if each_dart {
+        &["20", "5", "1", "26", "20", "5", "25"]
+    } else {
+        &["26", "25"]
+    };
+    for count in held + 1..=expected.len() {
+        proof.host.submissions(count).await;
+        proof.output.allow_one();
+        proof.host.terminals(count).await;
+    }
+    let requests: Vec<_> = expected
+        .iter()
+        .map(|text| (*text, SpeechOutcome::Delivered))
+        .collect();
+    proof.host.assert_requests(&requests);
+    proof.output.assert_delivered("living_room", expected);
+    proof
+        .finish(
+            &format!("compiled-deadline/slow-rounds/{mode}/active={active}"),
+            expected.len(),
+        )
+        .await;
+    drop(socket);
+}
+
+async fn stopped_queue_does_not_resume(mode: &str, active: bool) {
+    let (proof, mut socket) = Proof::start(mode).await;
+    let each_dart = mode == "each_dart_then_total";
+    send(&mut socket, &[BASELINE, DART, DART_TWO, DART_THREE]).await;
+    proof.output.wait_for(&proof.output.prepared, 1).await;
+    if active {
+        proof.output.prepare_gate.add_permits(1);
+        proof.output.wait_for(&proof.output.entered, 1).await;
+    }
+    proof
+        .policy_event("Policy readiness: awaiting clear", "TotalAccepted")
+        .await;
+    send(
+        &mut socket,
+        &[
+            PARTIAL, BASELINE, NEUTRAL, DART, DART_TWO, PARTIAL, BASELINE,
+        ],
+    )
+    .await;
+    proof
+        .policy_event(
+            "Policy readiness: collecting (0 darts)",
+            if each_dart {
+                "Speech queued: 6"
+            } else {
+                "Speech queued: 1"
+            },
+        )
+        .await;
+    assert_eq!(proof.host.trace.lock().requests.len(), 1);
+    send(&mut socket, &[STOPPED]).await;
+    proof
+        .policy_event("Policy readiness: awaiting baseline", "BoardStopped")
+        .await;
+    assert!(!proof.host.trace.lock().closes.is_empty());
+    // The pinned manager aborts this recording future even after entry into
+    // transport. That cannot establish reversal of external/audible effects.
+    proof.host.terminals(1).await;
+    let old_text = if each_dart { "20" } else { "26" };
+    let old_outcome = SpeechOutcome::Cancelled;
+    proof.host.assert_requests(&[(old_text, old_outcome)]);
+
+    // Running nonempty input after stop is still ineligible. The fresh baseline
+    // is a separate frame; the next round uses different scores from stale work.
+    send(&mut socket, &[DART_TWO]).await;
+    proof
+        .policy_event("Policy readiness: awaiting baseline", "BaselineRequired")
+        .await;
+    assert_eq!(proof.host.trace.lock().requests.len(), 1);
+    send(&mut socket, &[BASELINE]).await;
+    let continuation = fixture_frames(include_str!(
+        "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-synthetic-continuation.json"
+    ));
+    send(&mut socket, &continuation[..3]).await;
+    let fresh: &[&str] = if each_dart {
+        &["3", "7", "7", "17"]
+    } else {
+        &["17"]
+    };
+    for count in 2..=fresh.len() + 1 {
+        proof.host.submissions(count).await;
+        proof.output.allow_one();
+        proof.host.terminals(count).await;
+    }
+    proof
+        .policy_event("Policy readiness: awaiting clear", "TotalAccepted")
+        .await;
+    let mut requests = vec![(old_text, old_outcome)];
+    requests.extend(fresh.iter().map(|text| (*text, SpeechOutcome::Delivered)));
+    proof.host.assert_requests(&requests);
+    proof.output.assert_delivered("living_room", fresh);
+    proof
+        .finish(
+            &format!("compiled-stop/restart/{mode}/active={active}"),
+            fresh.len(),
+        )
+        .await;
     drop(socket);
 }
 
@@ -633,7 +874,11 @@ async fn total_only() {
     .await;
     proof.host.terminals(1).await;
     proof.output.allow_one();
-    send(&mut socket, &[PARTIAL, FULL, BASELINE, DART, PARTIAL]).await;
+    send(
+        &mut socket,
+        &[PARTIAL, FULL, BASELINE, NEUTRAL, DART, PARTIAL],
+    )
+    .await;
     proof.host.terminals(2).await;
     proof.host.assert_requests(&[
         ("26", SpeechOutcome::Delivered),
@@ -761,6 +1006,20 @@ async fn compiled_component_uses_real_niles_speech_scheduler() {
     ordered_speech_does_not_replace_the_last_dart().await;
     total_only().await;
     close_reconnect_and_room_switch().await;
+    for mode in ["each_dart_then_total", "total_only"] {
+        for active in [false, true] {
+            deadline_and_slow_rounds(mode, active).await;
+            stopped_queue_does_not_resume(mode, active).await;
+        }
+    }
+    original_capture_and_continuation(
+        "each_dart_then_total",
+        &[
+            "3", "7", "7", "17", "3", "7", "7", "17", "3", "7", "7", "17",
+        ],
+    )
+    .await;
+    original_capture_and_continuation("total_only", &["17", "17", "17"]).await;
     captured_replay(
         "each_dart_then_total",
         &[
