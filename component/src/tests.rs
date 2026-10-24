@@ -53,41 +53,42 @@ fn desired(on: Option<bool>) -> WitDeviceState {
 fn composed_device_start_stop_preserve_identity_and_exact_provider_calls() {
     setup(initial(false));
     Plugin::init().unwrap();
-    http::set_replies([
-        Ok(http::Response {
-            status: 204,
-            headers: vec![],
-            body: vec![],
-        }),
-        response(r#"{"connected":true,"running":true}"#),
-    ]);
+    http::set_replies([Ok(http::Response {
+        status: 204,
+        headers: vec![],
+        body: vec![],
+    })]);
     assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_ok());
-    let recorded = http::requests();
     assert_eq!(
-        recorded
+        http::requests()
             .iter()
             .map(|r| (r.method, r.url.as_str()))
             .collect::<Vec<_>>(),
-        [
-            (http::Method::Put, "http://board.local:3180/api/start"),
-            (http::Method::Get, "http://board.local:3180/api/state"),
-        ]
+        [(http::Method::Put, "http://board.local:3180/api/start")]
     );
-    let calls = devices::calls();
-    assert_eq!(calls.upserts.last().unwrap().id, "living_room/dartboard");
-    assert_eq!(calls.upserts.last().unwrap().state.on, Some(true));
+    assert_eq!(
+        devices::calls().upserts.last().unwrap().state.on,
+        Some(false)
+    );
 
-    http::set_replies([
-        Ok(http::Response {
-            status: 204,
-            headers: vec![],
-            body: vec![],
-        }),
-        response(r#"{"connected":true,"running":false}"#),
-    ]);
+    http::append_replies([response(r#"{"connected":true,"running":true}"#)]);
+    let timer = latest_timer("detection-poll:");
+    Plugin::on_timer(timer);
+    assert_eq!(
+        devices::calls().upserts.last().unwrap().state.on,
+        Some(true)
+    );
+
+    http::set_replies([Ok(http::Response {
+        status: 204,
+        headers: vec![],
+        body: vec![],
+    })]);
     assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(false))).is_ok());
     assert_eq!(http::requests()[0].method, http::Method::Put);
     assert_eq!(http::requests()[0].url, "http://board.local:3180/api/stop");
+    http::append_replies([response(r#"{"connected":true,"running":false}"#)]);
+    Plugin::on_timer(latest_timer("detection-poll:"));
     assert_eq!(
         devices::calls().upserts.last().unwrap().state.on,
         Some(false)
@@ -96,7 +97,7 @@ fn composed_device_start_stop_preserve_identity_and_exact_provider_calls() {
 
 #[test]
 fn confirmed_detection_restart_reopens_speech_stream() {
-    setup(initial(false));
+    setup(initial(true));
     enable_announcements("total_only");
     Plugin::init().unwrap();
     send_event(EMPTY_EVENT);
@@ -105,26 +106,22 @@ fn confirmed_detection_restart_reopens_speech_stream() {
     assert_eq!(speech_stream::calls().submitted.len(), 1);
     let first_session = speech_stream::calls().submitted[0].0;
 
-    http::set_replies([
-        Ok(http::Response {
-            status: 204,
-            headers: vec![],
-            body: vec![],
-        }),
-        response(r#"{"connected":true,"running":false}"#),
-    ]);
+    http::set_replies([Ok(http::Response {
+        status: 204,
+        headers: vec![],
+        body: vec![],
+    })]);
     assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(false))).is_ok());
     assert_eq!(speech_stream::calls().closed, [first_session]);
 
-    http::set_replies([
-        Ok(http::Response {
-            status: 204,
-            headers: vec![],
-            body: vec![],
-        }),
-        response(r#"{"connected":true,"running":true}"#),
-    ]);
+    http::set_replies([Ok(http::Response {
+        status: 204,
+        headers: vec![],
+        body: vec![],
+    })]);
     assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_ok());
+    http::append_replies([response(r#"{"connected":true,"running":true}"#)]);
+    Plugin::on_timer(latest_timer("detection-poll:"));
     let calls = speech_stream::calls();
     assert_eq!(calls.opened_sessions.len(), 2);
     assert_eq!(calls.opened_sessions[1].1, "living_room");
@@ -140,20 +137,19 @@ fn confirmed_detection_restart_reopens_speech_stream() {
 }
 
 #[test]
-fn composed_acknowledged_but_observed_false_returns_pending_and_keeps_actual_state() {
+fn composed_acknowledged_but_observed_false_is_pending_and_keeps_actual_state() {
     setup(initial(false));
     Plugin::init().unwrap();
-    http::set_replies([
-        Ok(http::Response {
-            status: 200,
-            headers: vec![],
-            body: vec![],
-        }),
-        response(r#"{"running":false}"#),
-    ]);
+    http::set_replies([Ok(http::Response {
+        status: 200,
+        headers: vec![],
+        body: vec![],
+    })]);
     assert!(
-        Plugin::set_device("living_room/dartboard".into(), desired(Some(true)).clone()).is_err()
+        Plugin::set_device("living_room/dartboard".into(), desired(Some(true)).clone()).is_ok()
     );
+    http::append_replies([response(r#"{"running":false}"#)]);
+    Plugin::on_timer(latest_timer("detection-poll:"));
     assert_eq!(
         devices::calls().upserts.last().unwrap().state.on,
         Some(false)
@@ -164,19 +160,25 @@ fn composed_acknowledged_but_observed_false_returns_pending_and_keeps_actual_sta
             .any(|line| line.contains("still stopped"))
     );
 }
-
 #[test]
-fn composed_timeout_and_failure_are_errors_not_optimistic_state() {
+fn composed_timeout_is_uncertain_without_optimistic_state_and_rejection_is_an_error() {
     setup(initial(false));
     Plugin::init().unwrap();
     http::fail_next(http::HttpError::Timeout);
-    assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_err());
+    assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_ok());
     assert_eq!(
         devices::calls().upserts.last().unwrap().state.on,
         Some(false)
     );
     assert_eq!(http::requests().len(), 3);
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("dispatch uncertain"))
+    );
 
+    setup(initial(false));
+    Plugin::init().unwrap();
     http::set_replies([Ok(http::Response {
         status: 503,
         headers: vec![],
@@ -187,8 +189,120 @@ fn composed_timeout_and_failure_are_errors_not_optimistic_state() {
         devices::calls().upserts.last().unwrap().state.on,
         Some(false)
     );
+    assert!(render_text().iter().any(|line| line.contains("rejected")));
+}
+#[test]
+fn delayed_startup_schedule_is_truthful_for_ack_and_timeout_dispatch() {
+    let schedule: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../../crates/autodarts-core/tests/fixtures/board-manager-jvl15-startup-synthetic-scenarios.json"
+    ))
+    .unwrap();
+    assert_eq!(schedule["reported_delay_seconds"], 15.575831);
+    for dispatch in ["http_2xx", "response_timeout"] {
+        setup(initial(false));
+        Plugin::init().unwrap();
+        if dispatch == "http_2xx" {
+            http::set_replies([Ok(http::Response {
+                status: 204,
+                headers: vec![],
+                body: vec![],
+            })]);
+        } else {
+            http::set_replies([]);
+            http::fail_next(http::HttpError::Timeout);
+        }
+        assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_ok());
+        let requests_after_dispatch = http::requests().len();
+        assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_ok());
+        assert_eq!(http::requests().len(), requests_after_dispatch);
+
+        for index in 0..15 {
+            let running = index == 0;
+            http::append_replies([response(&format!(
+                r#"{{"status":"Starting","running":{running}}}"#
+            ))]);
+            Plugin::on_timer(latest_timer("detection-poll:"));
+            assert_eq!(
+                devices::calls().upserts.last().unwrap().state.on,
+                Some(false)
+            );
+        }
+        http::append_replies([response(r#"{"status":"Started","running":true}"#)]);
+        Plugin::on_timer(latest_timer("detection-poll:"));
+        assert_eq!(
+            devices::calls().upserts.last().unwrap().state.on,
+            Some(true)
+        );
+        assert!(
+            render_text()
+                .iter()
+                .any(|line| line.contains("running confirmed"))
+        );
+    }
 }
 
+#[test]
+fn expired_startup_suppresses_duplicates_until_fresh_readback_and_accepts_late_completion() {
+    setup(initial(false));
+    Plugin::init().unwrap();
+    http::set_replies([Ok(http::Response {
+        status: 204,
+        headers: vec![],
+        body: vec![],
+    })]);
+    assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_ok());
+    let before_expiry = http::requests().len();
+    let expiry = latest_timer("detection-expiry:");
+    Plugin::on_timer(expiry);
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("monitoring expired"))
+    );
+    assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_ok());
+    assert_eq!(http::requests().len(), before_expiry);
+
+    http::append_replies([
+        response("fixture-version"),
+        response(r#"{"status":"Started","running":true}"#),
+    ]);
+    Plugin::on_timer("poll".into());
+    assert_eq!(
+        devices::calls().upserts.last().unwrap().state.on,
+        Some(true)
+    );
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("running confirmed"))
+    );
+}
+
+#[test]
+fn unreachable_board_and_timer_registration_failure_are_distinct_diagnostics() {
+    setup(initial(false));
+    Plugin::init().unwrap();
+    http::fail_next(http::HttpError::Connection("refused".into()));
+    assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_err());
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("command_connection"))
+    );
+
+    test_host::niles::integration::timers::fail_after(true);
+    http::set_replies([Ok(http::Response {
+        status: 204,
+        headers: vec![],
+        body: vec![],
+    })]);
+    assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_ok());
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("monitoring unavailable"))
+    );
+}
 #[test]
 fn composed_unsupported_unconfigured_and_recovery_paths() {
     setup([]);
@@ -211,15 +325,14 @@ fn composed_unsupported_unconfigured_and_recovery_paths() {
     assert!(Plugin::set_device("living_room/dartboard".into(), desired(None)).is_err());
     assert!(http::requests().is_empty());
 
-    http::set_replies([
-        Ok(http::Response {
-            status: 200,
-            headers: vec![],
-            body: vec![],
-        }),
-        response(r#"{"running":true}"#),
-    ]);
+    http::set_replies([Ok(http::Response {
+        status: 200,
+        headers: vec![],
+        body: vec![],
+    })]);
     assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_ok());
+    http::append_replies([response(r#"{"running":true}"#)]);
+    Plugin::on_timer(latest_timer("detection-poll:"));
     assert_eq!(
         devices::calls().upserts.last().unwrap().state.on,
         Some(true)
@@ -1357,7 +1470,10 @@ fn acknowledged_stop_cancels_even_before_observation_catches_up() {
             }),
             response(r#"{"connected":true,"running":true}"#),
         ]);
-        assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(false))).is_err());
+        assert_eq!(
+            Plugin::set_device("living_room/dartboard".into(), desired(Some(false))).is_err(),
+            status == 500
+        );
         set_terminal(speech_stream::calls().submitted_ids[0].1);
         poll_speech();
         assert_eq!(

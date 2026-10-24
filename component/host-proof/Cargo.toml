@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 niles-core = { path = "../../.cache/niles/crates/niles-core" }
+niles-mqtt = { path = "../../.cache/niles/crates/niles-mqtt" }
 niles-plugins = { path = "../../.cache/niles/crates/niles-plugins" }
 niles-scheduler = { path = "../../.cache/niles/crates/niles-scheduler" }
 niles-tts = { path = "../../.cache/niles/crates/niles-tts" }

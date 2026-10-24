@@ -1,5 +1,6 @@
 use futures_util::SinkExt;
-use niles_core::{DeviceRegistry, EventBus, RoomName};
+use niles_core::{DeviceRegistry, DeviceState, EventBus, RoomName};
+use niles_mqtt::DeviceCommander;
 use niles_plugins::speech_stream::{
     SessionSpeechHost, SpeechError, SpeechOutcome, SpeechStreamHost,
 };
@@ -9,7 +10,10 @@ use niles_tts::speech_session::{
 };
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -331,22 +335,19 @@ impl SpeechStreamHost for ObservedHost {
         }
     }
 }
-
 struct Board {
     task: JoinHandle<()>,
     connections: mpsc::UnboundedReceiver<Socket>,
 }
 
 impl Board {
-    async fn start() -> Self {
-        // Plan portability boundary: both the exact candidate and released host
-        // restrict ws:// to declared 80/3180. A port-zero fixture is rejected even
-        // if its address is supplied via settings. Never rewrite the candidate or
-        // broaden production permissions merely to make this proof pass.
+    async fn start(initial_running: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:3180")
             .await
-            .expect("host proof requires free loopback port 3180 (candidate permission); ephemeral-port proof is unsupported by the released contract");
+            .expect("host proof requires free loopback port 3180 (candidate permission)");
         let (connections, rx) = mpsc::unbounded_channel();
+        let running = Arc::new(AtomicBool::new(initial_running));
+        let board_running = Arc::clone(&running);
         let task = tokio::spawn(async move {
             let mut children = JoinSet::new();
             loop {
@@ -354,6 +355,7 @@ impl Board {
                     accepted = listener.accept() => {
                         let (mut stream, _) = accepted.unwrap();
                         let connections = connections.clone();
+                        let board_running = Arc::clone(&board_running);
                         children.spawn(async move {
                             let mut peek = [0u8; 1024];
                             let count = tokio::time::timeout(WAIT, async {
@@ -377,17 +379,24 @@ impl Board {
                                 let _ = connections.send(socket);
                                 return;
                             }
-                            // Consume the HTTP request before closing the socket;
-                            // unread receive data can otherwise reset the response.
                             stream.read_exact(&mut peek[..count]).await.unwrap();
-                            let body = if peek[..count].starts_with(b"GET /api/version ") {
-                                "1.0.0-fixture"
+                            let (status, body) = if peek[..count].starts_with(b"PUT /api/start ") {
+                                tokio::time::sleep(Duration::from_secs(3)).await;
+                                board_running.store(true, Ordering::SeqCst);
+                                ("204 No Content", String::new())
+                            } else if peek[..count].starts_with(b"PUT /api/stop ") {
+                                ("503 Service Unavailable", String::new())
+                            } else if peek[..count].starts_with(b"GET /api/version ") {
+                                ("200 OK", "1.0.0-fixture".into())
                             } else if peek[..count].starts_with(b"GET /api/state ") {
-                                r#"{"connected":true,"running":true,"numThrows":0}"#
+                                let running = board_running.load(Ordering::SeqCst);
+                                (
+                                    "200 OK",
+                                    format!(r#"{{"connected":true,"running":{running},"numThrows":0}}"#),
+                                )
                             } else {
-                                ""
+                                ("404 Not Found", String::new())
                             };
-                            let status = if body.is_empty() { "404 Not Found" } else { "200 OK" };
                             let response = format!(
                                 "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                                 body.len()
@@ -433,6 +442,7 @@ async fn send<T: AsRef<str>>(socket: &mut Socket, frames: &[T]) {
 
 struct Proof {
     runtime: Runtime,
+    registry: Arc<DeviceRegistry>,
     settings: Arc<Mutex<toml::Table>>,
     board: Board,
     host: Arc<ObservedHost>,
@@ -442,6 +452,9 @@ struct Proof {
 
 impl Proof {
     async fn start(mode: &str) -> (Self, Socket) {
+        Self::start_with_initial(mode, true).await
+    }
+    async fn start_with_initial(mode: &str, initial_running: bool) -> (Self, Socket) {
         let wasm = std::path::PathBuf::from(
             std::env::var_os("NILES_COMPONENT_WASM")
                 .expect("set NILES_COMPONENT_WASM to the exact staged integration.wasm"),
@@ -454,7 +467,7 @@ impl Proof {
             "compiled candidate: {} (manifest unchanged; loopback port 3180 required)",
             wasm.display()
         );
-        let mut board = Board::start().await;
+        let mut board = Board::start(initial_running).await;
         let settings = Arc::new(Mutex::new(toml::Table::from_iter([
             (
                 "address".into(),
@@ -467,8 +480,9 @@ impl Proof {
             ("speech_stream_enabled".into(), toml::Value::Boolean(true)),
         ])));
         let config = Arc::clone(&settings);
+        let registry = Arc::new(DeviceRegistry::new());
         let house = House::new(
-            Arc::new(DeviceRegistry::new()),
+            Arc::clone(&registry),
             EventBus::new(128),
             Arc::new(MemoryStore::new()),
         )
@@ -485,6 +499,7 @@ impl Proof {
         (
             Self {
                 runtime,
+                registry,
                 settings,
                 board,
                 host,
@@ -1001,6 +1016,7 @@ async fn active_transport_is_not_replaced() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn compiled_component_uses_real_niles_speech_scheduler() {
+    compiled_detection_command_crosses_response_deadline().await;
     active_transport_is_not_replaced().await;
     ordered_and_repeated_removal().await;
     ordered_speech_does_not_replace_the_last_dart().await;
@@ -1034,4 +1050,86 @@ async fn compiled_component_uses_real_niles_speech_scheduler() {
         "jvl14-exact-reduced-capture/total-only",
     )
     .await;
+}
+async fn compiled_detection_command_crosses_response_deadline() {
+    let (proof, mut socket) = Proof::start_with_initial("total_only", false).await;
+    let id = tokio::time::timeout(WAIT, async {
+        loop {
+            if let Some(device) = proof
+                .registry
+                .list_all()
+                .into_iter()
+                .find(|device| device.id.to_string().contains("living_room/dartboard"))
+            {
+                break device.id;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("component registers the controllable board");
+    println!("compiled device id: {id}");
+    let start = DeviceState {
+        on: Some(true),
+        ..DeviceState::default()
+    };
+    let result = proof.runtime.command(&id, &start).await;
+    let before = proof.registry.get(&id).expect("reported device").state.on;
+    println!(
+        "detection pending result: {}",
+        serde_json::json!({"result": if result.is_ok() { "ok" } else { "error" }, "reported_on": before})
+    );
+    assert!(
+        result.is_ok(),
+        "timeout must be accepted for monitoring: {result:?}"
+    );
+    assert_eq!(before, Some(false));
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            if proof
+                .registry
+                .get(&id)
+                .is_some_and(|device| device.state.on == Some(true))
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("delayed board startup reaches the component's later readback");
+    let after = proof.registry.get(&id).expect("reported device").state.on;
+    println!(
+        "detection observed result: {}",
+        serde_json::json!({"result": "ok", "reported_on": after})
+    );
+    assert_eq!(after, Some(true));
+
+    let stop = DeviceState {
+        on: Some(false),
+        ..DeviceState::default()
+    };
+    let rejection = proof.runtime.command(&id, &stop).await;
+    println!(
+        "detection rejection result: {}",
+        serde_json::json!({"result": "error", "error": rejection.as_ref().err()})
+    );
+    assert!(rejection.is_err());
+    assert_eq!(
+        proof.registry.get(&id).expect("reported device").state.on,
+        Some(true)
+    );
+
+    socket.close(None).await.unwrap();
+    let Proof {
+        runtime,
+        manager,
+        mut board,
+        ..
+    } = proof;
+    runtime.shutdown().await;
+    manager.shutdown().await;
+    board.task.abort();
+    let _ = (&mut board.task).await;
 }

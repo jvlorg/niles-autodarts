@@ -87,6 +87,9 @@ pub mod niles {
                 REQUESTS.with(|slot| slot.borrow_mut().clear());
                 FAIL_NEXT.with(|slot| *slot.borrow_mut() = None);
             }
+            pub fn append_replies(replies: impl IntoIterator<Item = Result<Response, HttpError>>) {
+                REPLIES.with(|slot| slot.borrow_mut().extend(replies));
+            }
             pub fn requests() -> Vec<ObservedRequest> {
                 REQUESTS.with(|slot| slot.borrow().clone())
             }

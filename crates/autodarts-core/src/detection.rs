@@ -7,8 +7,12 @@ pub enum DetectionCommand {
     Stop,
 }
 
-pub trait CommandTransport: Transport {
-    fn put(&mut self, url: &Url, timeout_ms: u32) -> Result<u16, HttpFailure>;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DetectionDispatch {
+    /// The provider returned a successful HTTP status. This is acknowledgement only.
+    Acknowledged,
+    /// The provider response deadline elapsed before the host had a complete answer.
+    Uncertain(&'static str),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,58 +21,77 @@ pub enum DetectionResult {
     Pending {
         desired: bool,
         observed: Option<bool>,
+        dispatch: DetectionDispatch,
     },
     Failed(&'static str),
 }
 
-/// Send one detection command and make one bounded independent state reread.
-/// The old snapshot is intentionally not an input: only fresh provider state
-/// can confirm the requested transition.
+pub trait CommandTransport: Transport {
+    fn put(&mut self, url: &Url, timeout_ms: u32) -> Result<u16, HttpFailure>;
+}
+
+/// Submit one bounded command. A timeout is not evidence that the provider rejected it:
+/// the request may have been accepted before the whole response deadline elapsed.
+pub fn dispatch_detection<T: CommandTransport>(
+    config: &Config,
+    transport: &mut T,
+    command: DetectionCommand,
+) -> Result<DetectionDispatch, &'static str> {
+    let endpoint = if command == DetectionCommand::Start {
+        "api/start"
+    } else {
+        "api/stop"
+    };
+    match transport.put(&config.endpoint(endpoint), config.timeout_ms) {
+        Ok(status) if (200..300).contains(&status) => Ok(DetectionDispatch::Acknowledged),
+        Ok(_) => Err("command_http_status"),
+        Err(HttpFailure::Timeout) => Ok(DetectionDispatch::Uncertain("command_timeout")),
+        Err(HttpFailure::Connection) => Err("command_connection"),
+        Err(HttpFailure::TooLarge) => {
+            Ok(DetectionDispatch::Uncertain("command_response_too_large"))
+        }
+    }
+}
+
+pub fn detection_result(
+    desired: bool,
+    dispatch: DetectionDispatch,
+    snapshot: &Snapshot,
+) -> DetectionResult {
+    let observed = match snapshot.state {
+        BoardState::Observed { running, .. } => running,
+        BoardState::Unknown => None,
+    };
+    if snapshot.availability == Availability::Available && observed == Some(desired) {
+        DetectionResult::Confirmed(desired)
+    } else {
+        DetectionResult::Pending {
+            desired,
+            observed,
+            dispatch,
+        }
+    }
+}
+
+/// Compatibility helper for deterministic callers that need a command followed by one
+/// independent state read. The component uses `dispatch_detection` and reconciles later.
 pub fn set_detection<T: CommandTransport>(
     config: &Config,
     transport: &mut T,
     command: DetectionCommand,
 ) -> (DetectionResult, Snapshot) {
     let desired = command == DetectionCommand::Start;
-    let endpoint = if desired { "api/start" } else { "api/stop" };
-    match transport.put(&config.endpoint(endpoint), config.timeout_ms) {
-        Ok(status) if (200..300).contains(&status) => {}
-        Ok(_) => {
+    let dispatch = match dispatch_detection(config, transport, command) {
+        Ok(dispatch) => dispatch,
+        Err(reason) => {
             return (
-                DetectionResult::Failed("command_http_status"),
-                Snapshot::unknown("command".into(), "http_status".into(), None),
+                DetectionResult::Failed(reason),
+                Snapshot::unknown("command".into(), reason.into(), None),
             );
         }
-        Err(HttpFailure::Timeout) => {
-            return (
-                DetectionResult::Failed("command_timeout"),
-                Snapshot::unknown("command".into(), "timeout".into(), None),
-            );
-        }
-        Err(HttpFailure::Connection) => {
-            return (
-                DetectionResult::Failed("command_connection"),
-                Snapshot::unknown("command".into(), "connection".into(), None),
-            );
-        }
-        Err(HttpFailure::TooLarge) => {
-            return (
-                DetectionResult::Failed("command_response_too_large"),
-                Snapshot::unknown("command".into(), "too_large".into(), None),
-            );
-        }
-    }
+    };
     let snapshot = poll_state(config, transport);
-    let observed = match snapshot.state {
-        BoardState::Observed { running, .. } => running,
-        BoardState::Unknown => None,
-    };
-    let result = if snapshot.availability == Availability::Available && observed == Some(desired) {
-        DetectionResult::Confirmed(desired)
-    } else {
-        DetectionResult::Pending { desired, observed }
-    };
-    (result, snapshot)
+    (detection_result(desired, dispatch, &snapshot), snapshot)
 }
 
 pub fn poll_state<T: Transport>(config: &Config, transport: &mut T) -> Snapshot {
@@ -155,62 +178,70 @@ mod tests {
     }
 
     #[test]
-    fn start_and_stop_use_exact_put_paths_then_fresh_state_reads() {
-        for (command, path, running) in [
-            (DetectionCommand::Start, "api/start", true),
-            (DetectionCommand::Stop, "api/stop", false),
-        ] {
-            let mut fixture = Fixture::new(Ok(204), state(running));
-            let (result, snapshot) = set_detection(&config(), &mut fixture, command);
-            assert_eq!(result, DetectionResult::Confirmed(running));
-            assert!(
-                matches!(snapshot.state, BoardState::Observed { running: Some(value), .. } if value == running)
-            );
-            assert_eq!(
-                fixture.puts,
-                [(format!("http://board.local:3180/{path}"), 1500)]
-            );
-            assert_eq!(
-                fixture.gets,
-                [("http://board.local:3180/api/state".into(), 1500)]
-            );
-        }
+    fn dispatch_and_reconciliation_keep_acknowledgement_separate_from_state() {
+        let mut fixture = Fixture::new(Ok(204), state(true));
+        let dispatch = dispatch_detection(&config(), &mut fixture, DetectionCommand::Start);
+        assert_eq!(dispatch, Ok(DetectionDispatch::Acknowledged));
+        assert_eq!(fixture.gets.len(), 0);
+        let snapshot = poll_state(&config(), &mut fixture);
+        assert_eq!(
+            detection_result(true, dispatch.unwrap(), &snapshot),
+            DetectionResult::Confirmed(true)
+        );
+        assert_eq!(
+            fixture.puts,
+            [("http://board.local:3180/api/start".into(), 1500)]
+        );
+        assert_eq!(
+            fixture.gets,
+            [("http://board.local:3180/api/state".into(), 1500)]
+        );
     }
 
     #[test]
     fn acknowledged_start_with_observed_false_is_pending_not_success() {
         let mut fixture = Fixture::new(Ok(200), state(false));
-        let (result, snapshot) = set_detection(&config(), &mut fixture, DetectionCommand::Start);
+        let dispatch =
+            dispatch_detection(&config(), &mut fixture, DetectionCommand::Start).unwrap();
+        let snapshot = poll_state(&config(), &mut fixture);
         assert_eq!(
-            result,
+            detection_result(true, dispatch, &snapshot),
             DetectionResult::Pending {
                 desired: true,
-                observed: Some(false)
+                observed: Some(false),
+                dispatch: DetectionDispatch::Acknowledged,
             }
         );
-        assert!(matches!(
-            snapshot.state,
-            BoardState::Observed {
-                running: Some(false),
-                ..
-            }
-        ));
     }
 
     #[test]
-    fn command_timeout_or_http_failure_does_not_reread_or_claim_success() {
-        for (result, expected) in [
-            (
-                Err(HttpFailure::Timeout),
-                DetectionResult::Failed("command_timeout"),
-            ),
-            (Ok(503), DetectionResult::Failed("command_http_status")),
+    fn response_timeout_is_uncertain_without_a_false_failure() {
+        for error in [HttpFailure::Timeout, HttpFailure::TooLarge] {
+            let mut fixture = Fixture::new(Err(error), []);
+            let dispatch = dispatch_detection(&config(), &mut fixture, DetectionCommand::Start);
+            assert_eq!(
+                dispatch,
+                Ok(DetectionDispatch::Uncertain(match error {
+                    HttpFailure::Timeout => "command_timeout",
+                    HttpFailure::TooLarge => "command_response_too_large",
+                    HttpFailure::Connection => unreachable!(),
+                }))
+            );
+            assert!(fixture.gets.is_empty());
+        }
+    }
+
+    #[test]
+    fn provider_rejection_and_unreachable_board_remain_definite_failures() {
+        for (error, expected) in [
+            (Err(HttpFailure::Connection), "command_connection"),
+            (Ok(503), "command_http_status"),
         ] {
-            let mut fixture = Fixture::new(result, []);
-            let (result, snapshot) =
-                set_detection(&config(), &mut fixture, DetectionCommand::Start);
-            assert_eq!(result, expected);
-            assert_eq!(snapshot.availability, Availability::Unavailable);
+            let mut fixture = Fixture::new(error, []);
+            assert_eq!(
+                dispatch_detection(&config(), &mut fixture, DetectionCommand::Start),
+                Err(expected)
+            );
             assert!(fixture.gets.is_empty());
         }
     }
@@ -218,28 +249,31 @@ mod tests {
     #[test]
     fn state_timeout_and_unknown_observation_remain_pending() {
         let mut timed_out = Fixture::new(Ok(204), [Err(HttpFailure::Timeout)]);
-        let (result, snapshot) = set_detection(&config(), &mut timed_out, DetectionCommand::Start);
+        let dispatch =
+            dispatch_detection(&config(), &mut timed_out, DetectionCommand::Start).unwrap();
+        let snapshot = poll_state(&config(), &mut timed_out);
         assert_eq!(
-            result,
+            detection_result(true, dispatch, &snapshot),
             DetectionResult::Pending {
                 desired: true,
-                observed: None
+                observed: None,
+                dispatch: DetectionDispatch::Acknowledged,
             }
         );
         assert_eq!(snapshot.availability, Availability::Unavailable);
-        assert_eq!(timed_out.gets.len(), 1);
         let mut missing = Fixture::new(Ok(204), [response(200, "{}")]);
-        let (result, snapshot) = set_detection(&config(), &mut missing, DetectionCommand::Stop);
+        let dispatch = dispatch_detection(&config(), &mut missing, DetectionCommand::Stop).unwrap();
+        let snapshot = poll_state(&config(), &mut missing);
         assert_eq!(
-            result,
+            detection_result(false, dispatch, &snapshot),
             DetectionResult::Pending {
                 desired: false,
-                observed: None
+                observed: None,
+                dispatch: DetectionDispatch::Acknowledged,
             }
         );
         assert_eq!(snapshot.availability, Availability::Available);
         assert_eq!(snapshot.state, BoardState::Unknown);
-        assert_eq!(missing.gets.len(), 1);
     }
 
     #[test]

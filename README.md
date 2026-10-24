@@ -6,6 +6,8 @@ Standalone [Niles](https://github.com/MarkNygaard/niles) add-on candidate for lo
 
 - V1 uses only the configured local Board Manager. No cloud account, match feed, X01 authority, game creation, checkout, bust, or match-outcome claims.
 - Detection on/off controls Board Manager detection. It is not hardware power, reset, or game creation.
+- Detection commands are asynchronous. A successful or timed-out `/api/start`/`/api/stop` submission does not publish the requested state; the component reports the last validated observation and reconciles one bounded state read per timer callback for up to 30 seconds. Duplicate commands are suppressed until a fresh definitive observation resolves the operation.
+- The pinned `set-device` result is only `result<_, string>`: accepted or dispatch-uncertain monitoring returns success without structured progress text, while definite provider/local rejection returns an error. `Starting` is never treated as running. The later LLM/provider HTTP 429 `token_quota_exceeded` is separate and remains possible.
 - `announcements_enabled` and `speech_stream_enabled` default to `false`. Announcement mode must be explicit when enabled.
 - One configured room is the speech target. Niles owns household membership, satellite selection, permissions, synthesis, arbitration, and final transport.
 - A third validated detected dart arms a fixed one-second total trigger. Explicit takeout may complete it earlier. One- and two-dart rounds complete only on explicit takeout. Empty snapshots do not infer missing darts.
@@ -14,9 +16,8 @@ Standalone [Niles](https://github.com/MarkNygaard/niles) add-on candidate for lo
 - Multiplier-zero misses are accepted only as canonical `M1` through `M20` with matching number, `Outside` bed, and zero multiplier. Ordinary scoring retains existing validation. Local totals are detection-derived sums, not authoritative game scores.
 - Clean `numThrows == 0` is the only baseline. Corrections, malformed input, stopped input, reconnects, disablement, settings changes, overflow, and stale generations invalidate commentary until a new baseline. Ordinary clear/takeout does not cancel already-triggered FIFO work.
 
-## Evidence and commands
+- Core parser/session tests and `cargo run -p autodarts-core --example announcement_replay` provide deterministic policy evidence. Component callback tests use isolated fake WIT imports and cover asynchronous detection startup, response-timeout uncertainty, `Starting`/`Started` progression, duplicate suppression, expiry/late completion, definite rejection, and timer failure alongside the existing speech/event matrix and exact 40-envelope JVL-14 reduced capture. The compiled proof uses the pinned Niles checkout's real scheduler and a recording output. Installed-host compatibility, general live Board Manager ordering, household routing, and audible playback remain open.
 
-- Core parser/session tests and `cargo run -p autodarts-core --example announcement_replay` provide deterministic policy evidence. Component callback tests use isolated fake WIT imports and cover timer identity, FIFO admission, correlated terminal outcomes, polling recovery, lifecycle invalidation, bounded overflow, and the exact 40-envelope JVL-14 reduced capture. The compiled proof uses the pinned Niles checkout's real scheduler and a recording output. Installed-host compatibility, general live Board Manager ordering, household routing, and audible playback remain open.
 
 The supplied installed alpha.2 observation at `82a30c4155e6ba20806a00734042a1f4ea49c1a7` is historical user evidence for audible hit and takeout-total behavior plus captured outside-miss failures. It does not establish that this candidate is installed, released, generally compatible, routed, or audibly verified.
 
