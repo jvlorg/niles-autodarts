@@ -561,17 +561,72 @@ fn unavailable_detection_readback_keeps_polling_until_recovery() {
 }
 
 #[test]
-fn unreachable_board_and_timer_registration_failure_are_distinct_diagnostics() {
+fn ambiguous_connection_reports_unknown_outcome_for_start_and_stop() {
+    for (initial_on, desired_on, action) in [(false, true, "start"), (true, false, "stop")] {
+        setup(initial(initial_on));
+        Plugin::init().unwrap();
+        http::fail_next(http::HttpError::Connection(
+            "opaque transport detail".into(),
+        ));
+        let result = Plugin::set_device("living_room/dartboard".into(), desired(Some(desired_on)));
+        assert_eq!(
+            result.unwrap_err(),
+            "Detection command outcome unknown: command_connection"
+        );
+        assert_eq!(
+            devices::calls().upserts.last().unwrap().state.on,
+            Some(initial_on)
+        );
+        let lines = render_text();
+        assert!(lines.iter().any(|line| line
+            == &format!("Detection command: {action} outcome unknown: command_connection")));
+        assert!(!lines.iter().any(|line| line.contains("rejected")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "Detection readback: command_connection")
+        );
+        assert_eq!(
+            http::requests()
+                .iter()
+                .filter(|request| request.method == http::Method::Put)
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn complete_http_rejection_remains_a_rejection_error() {
     setup(initial(false));
     Plugin::init().unwrap();
-    http::fail_next(http::HttpError::Connection("refused".into()));
-    assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_err());
-    assert!(
-        render_text()
-            .iter()
-            .any(|line| line.contains("command_connection"))
+    http::set_replies([Ok(http::Response {
+        status: 503,
+        headers: vec![],
+        body: vec![],
+    })]);
+    let result = Plugin::set_device("living_room/dartboard".into(), desired(Some(true)));
+    assert_eq!(
+        result.unwrap_err(),
+        "Detection command failed: command_http_status"
     );
+    assert_eq!(
+        devices::calls().upserts.last().unwrap().state.on,
+        Some(false)
+    );
+    let lines = render_text();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Detection command: start rejected: command_http_status")
+    );
+    assert!(!lines.iter().any(|line| line.contains("outcome unknown")));
+}
 
+#[test]
+fn timer_registration_failure_remains_distinct_from_dispatch_outcome() {
+    setup(initial(false));
+    Plugin::init().unwrap();
     test_host::niles::integration::timers::fail_after(true);
     http::set_replies([Ok(http::Response {
         status: 204,

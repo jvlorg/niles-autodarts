@@ -340,6 +340,8 @@ struct Board {
     task: JoinHandle<()>,
     connections: mpsc::UnboundedReceiver<Socket>,
     acknowledge_start: Arc<AtomicBool>,
+    incomplete_start: Arc<AtomicBool>,
+    close_connections: Arc<AtomicBool>,
     starts: Arc<AtomicUsize>,
 }
 
@@ -353,6 +355,10 @@ impl Board {
         let board_running = Arc::clone(&running);
         let acknowledge_start = Arc::new(AtomicBool::new(false));
         let board_acknowledge = Arc::clone(&acknowledge_start);
+        let incomplete_start = Arc::new(AtomicBool::new(false));
+        let board_incomplete = Arc::clone(&incomplete_start);
+        let close_connections = Arc::new(AtomicBool::new(false));
+        let board_close_connections = Arc::clone(&close_connections);
         let starts = Arc::new(AtomicUsize::new(0));
         let board_starts = Arc::clone(&starts);
         let task = tokio::spawn(async move {
@@ -361,11 +367,17 @@ impl Board {
                 tokio::select! {
                     accepted = listener.accept() => {
                         let (mut stream, _) = accepted.unwrap();
-                        let connections = connections.clone();
                         let board_running = Arc::clone(&board_running);
+                        let connections = connections.clone();
                         let acknowledge = Arc::clone(&board_acknowledge);
+                        let incomplete = Arc::clone(&board_incomplete);
+                        let close = Arc::clone(&board_close_connections);
                         let starts = Arc::clone(&board_starts);
                         children.spawn(async move {
+                            if close.load(Ordering::SeqCst) {
+                                stream.shutdown().await.unwrap();
+                                return;
+                            }
                             let mut peek = [0u8; 1024];
                             let count = tokio::time::timeout(WAIT, async {
                                 loop {
@@ -391,6 +403,11 @@ impl Board {
                             stream.read_exact(&mut peek[..count]).await.unwrap();
                             let (status, body) = if peek[..count].starts_with(b"PUT /api/start ") {
                                 starts.fetch_add(1, Ordering::SeqCst);
+                                if incomplete.load(Ordering::SeqCst) {
+                                    stream.write_all(b"HTTP/1.1 204 No Content\r\n").await.unwrap();
+                                    stream.shutdown().await.unwrap();
+                                    return;
+                                }
                                 if acknowledge.load(Ordering::SeqCst) {
                                     stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
                                     stream.shutdown().await.unwrap();
@@ -431,6 +448,8 @@ impl Board {
             task,
             connections: rx,
             acknowledge_start,
+            incomplete_start,
+            close_connections,
             starts,
         }
     }
@@ -1033,9 +1052,75 @@ async fn active_transport_is_not_replaced() {
     manager.shutdown().await;
 }
 
+async fn compiled_connection_errors_remain_ambiguous() {
+    let (proof, mut socket) = Proof::start_with_initial("total_only", false).await;
+    let id = tokio::time::timeout(WAIT, async {
+        loop {
+            if let Some(device) = proof
+                .registry
+                .list_all()
+                .into_iter()
+                .find(|device| device.id.to_string().contains("living_room/dartboard"))
+            {
+                break device.id;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("component registers the controllable board");
+    let tool = SetDevice::new(
+        Arc::clone(&proof.registry),
+        NoMqtt,
+        Arc::new(CommandRouter::z2m_only("unused").with_commander(Arc::new(proof.runtime.clone()))),
+        false,
+    );
+    proof.board.incomplete_start.store(true, Ordering::SeqCst);
+    let incomplete = tool
+        .execute(serde_json::json!({"device_id": id.to_string(), "on": true}))
+        .await
+        .expect_err("incomplete response must not become a successful command");
+    assert!(
+        incomplete
+            .to_string()
+            .contains("Detection command outcome unknown: command_connection")
+    );
+    assert_eq!(proof.board.starts.load(Ordering::SeqCst), 1);
+
+    proof.board.incomplete_start.store(false, Ordering::SeqCst);
+    proof.board.close_connections.store(true, Ordering::SeqCst);
+    let closed = tool
+        .execute(serde_json::json!({"device_id": id.to_string(), "on": true}))
+        .await
+        .expect_err("closed connection must not become a successful command");
+    assert!(
+        closed
+            .to_string()
+            .contains("Detection command outcome unknown: command_connection")
+    );
+    assert_eq!(
+        proof.board.starts.load(Ordering::SeqCst),
+        1,
+        "closed connection did not receive a start request"
+    );
+
+    println!("compiled ambiguous command outcomes: incomplete={incomplete}; closed={closed}");
+    socket.close(None).await.unwrap();
+    let Proof {
+        runtime,
+        manager,
+        mut board,
+        ..
+    } = proof;
+    runtime.shutdown().await;
+    manager.shutdown().await;
+    board.task.abort();
+    let _ = (&mut board.task).await;
+}
 #[tokio::test(flavor = "multi_thread")]
 async fn compiled_component_uses_real_niles_speech_scheduler() {
     compiled_detection_command_crosses_response_deadline().await;
+    compiled_connection_errors_remain_ambiguous().await;
     active_transport_is_not_replaced().await;
     ordered_and_repeated_removal().await;
     ordered_speech_does_not_replace_the_last_dart().await;

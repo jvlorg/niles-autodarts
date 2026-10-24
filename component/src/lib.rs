@@ -656,14 +656,21 @@ fn begin_detection(runtime: &mut Runtime, desired: bool) -> Result<(), String> {
         }
         Err(reason) => {
             cancel_detection(runtime);
-            runtime.command_status = Some(format!(
-                "{} rejected: {reason}",
-                if desired { "start" } else { "stop" }
-            ));
+            let action = if desired { "start" } else { "stop" };
+            let ambiguous = reason == "command_connection";
+            runtime.command_status = Some(if ambiguous {
+                format!("{action} outcome unknown: {reason}")
+            } else {
+                format!("{action} rejected: {reason}")
+            });
             runtime.detection_readback = Some(reason.into());
             report(runtime)?;
             ui::invalidate("board");
-            Err(format!("Detection command failed: {reason}"))
+            if ambiguous {
+                Err(format!("Detection command outcome unknown: {reason}"))
+            } else {
+                Err(format!("Detection command failed: {reason}"))
+            }
         }
     }
 }

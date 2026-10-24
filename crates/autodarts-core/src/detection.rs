@@ -238,18 +238,23 @@ mod tests {
     }
 
     #[test]
-    fn provider_rejection_and_unreachable_board_remain_definite_failures() {
-        for (error, expected) in [
-            (Err(HttpFailure::Connection), "command_connection"),
-            (Ok(503), "command_http_status"),
-        ] {
-            let mut fixture = Fixture::new(error, []);
-            assert_eq!(
-                dispatch_detection(&config(), &mut fixture, DetectionCommand::Start),
-                Err(expected)
-            );
-            assert!(fixture.gets.is_empty());
-        }
+    fn connection_error_is_ambiguous_without_dispatch_phase() {
+        let mut fixture = Fixture::new(Err(HttpFailure::Connection), []);
+        assert_eq!(
+            dispatch_detection(&config(), &mut fixture, DetectionCommand::Start),
+            Err("command_connection")
+        );
+        assert!(fixture.gets.is_empty());
+    }
+
+    #[test]
+    fn complete_http_rejection_is_definite() {
+        let mut fixture = Fixture::new(Ok(503), []);
+        assert_eq!(
+            dispatch_detection(&config(), &mut fixture, DetectionCommand::Start),
+            Err("command_http_status")
+        );
+        assert!(fixture.gets.is_empty());
     }
 
     #[test]
