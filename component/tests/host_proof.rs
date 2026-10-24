@@ -525,8 +525,13 @@ impl Proof {
         let host = ObservedHost::new(Arc::clone(&manager));
         runtime.connect_speech_stream(host.clone());
         runtime.install(&manifest, component).await.unwrap();
-        let socket = board.connected().await;
-        host.live_room("living_room").await;
+        let mut socket = board.connected().await;
+        if initial_running {
+            // Session opening is authorized by a current running observation,
+            // not by init or WebSocket connection alone.
+            send(&mut socket, &[BASELINE]).await;
+            host.live_room("living_room").await;
+        }
         (
             Self {
                 runtime,
