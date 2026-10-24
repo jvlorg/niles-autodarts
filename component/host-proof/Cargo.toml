@@ -16,6 +16,7 @@ tokio-tungstenite = "0.30"
 futures-util = "0.3"
 toml = "1.1"
 parking_lot = "0.12"
+serde_json = "1.0.154"
 # Constrain the host version without re-enabling ort's native-TLS defaults.
 # The pinned niles-recognition dependency supplies the released feature set.
 ort = { version = "=2.0.0-rc.12", default-features = false }
