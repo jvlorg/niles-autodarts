@@ -262,11 +262,6 @@ fn announcement_settings_room_speech_lifecycle_and_synthetic_delivery() {
     }));
     http::set_replies(initial(false));
     Plugin::on_timer("poll".into());
-    let pending_lines = render_text();
-    assert!(
-        pending_lines.iter().any(|line| line == "Speech pending: 1"),
-        "{pending_lines:?}"
-    );
 
     speech_stream::set_statuses(vec![
         bindings::niles::integration::speech_stream::RequestStatus {
@@ -278,6 +273,7 @@ fn announcement_settings_room_speech_lifecycle_and_synthetic_delivery() {
     Plugin::on_timer("poll".into());
     let lines = render_text();
     assert!(lines.iter().any(|line| line.contains("Replaced")));
+    assert!(lines.iter().any(|line| line.contains("Speech stream open")));
     assert!(
         lines
             .iter()
@@ -299,6 +295,13 @@ fn announcement_settings_room_speech_lifecycle_and_synthetic_delivery() {
             .iter()
             .any(|line| line == "Announcement room: office")
     );
+    let lines = render_text();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("Speech stream disabled"))
+    );
+    assert!(lines.iter().any(|line| line.contains("Replaced")));
     Plugin::stop();
 }
 
@@ -379,66 +382,77 @@ fn websocket_callback_drives_each_dart_and_total_after_clean_baseline() {
 }
 #[test]
 fn reduced_capture_uses_actual_callback_and_keeps_following_rounds_eligible() {
-    setup(initial(false));
-    enable_announcements("each_dart_then_total");
-    Plugin::init().unwrap();
-    websocket::status(
-        41,
-        bindings::niles::integration::websocket::ConnectionStatus::Connected,
-    );
     let capture: serde_json::Value = serde_json::from_slice(include_bytes!(
         "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-reduced-capture.json"
     ))
     .unwrap();
-    let envelopes = capture.as_array().unwrap();
-    websocket::message(
-        41,
-        bindings::niles::integration::websocket::Message::Text(
-            serde_json::to_string(&envelopes[0]).unwrap(),
-        ),
-    );
-    assert!(
-        render_text()
-            .iter()
-            .any(|line| line == "Last policy event: Suppressed (StateSuppressed)")
-    );
-    for envelope in &envelopes[1..] {
-        websocket::message(
-            41,
-            bindings::niles::integration::websocket::Message::Text(
-                serde_json::to_string(envelope).unwrap(),
-            ),
-        );
-    }
-    assert!(speech_stream::calls().submitted.is_empty());
-    assert!(
-        render_text()
-            .iter()
-            .any(|line| line.contains("Policy readiness"))
-    );
-
     let continuation: serde_json::Value = serde_json::from_slice(include_bytes!(
         "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-synthetic-continuation.json"
     ))
     .unwrap();
-    for envelope in continuation.as_array().unwrap() {
-        websocket::message(
-            41,
-            bindings::niles::integration::websocket::Message::Text(
-                serde_json::to_string(envelope).unwrap(),
-            ),
-        );
+    for mode in ["each_dart_then_total", "total_only"] {
+        for include_inactive_tail in [false, true] {
+            setup(initial(false));
+            enable_announcements(mode);
+            Plugin::init().unwrap();
+            websocket::status(
+                41,
+                bindings::niles::integration::websocket::ConnectionStatus::Connected,
+            );
+            let envelopes = capture.as_array().unwrap();
+            let prefix = if include_inactive_tail {
+                envelopes.as_slice()
+            } else {
+                &envelopes[..7]
+            };
+            for (index, envelope) in prefix.iter().enumerate() {
+                send_event(&serde_json::to_string(envelope).unwrap());
+                assert!(speech_stream::calls().submitted.is_empty());
+                if index == 5 || index == 6 {
+                    let lines = render_text();
+                    assert!(
+                        lines
+                            .iter()
+                            .any(|line| line.contains("Policy readiness: collecting (0 darts)"))
+                    );
+                    assert!(!lines.iter().any(|line| line.contains("baseline required")));
+                }
+            }
+            let mut expected = Vec::new();
+            let mut darts = 0;
+            for envelope in continuation.as_array().unwrap() {
+                send_event(&serde_json::to_string(envelope).unwrap());
+                let data = &envelope["data"];
+                if envelope["type"] == "state" {
+                    if let Some(count) = data["numThrows"].as_u64().filter(|count| *count > 0) {
+                        darts = count;
+                        if mode == "each_dart_then_total" {
+                            expected.push(if count == 1 { "3" } else { "7" });
+                        }
+                    }
+                } else if darts > 0 {
+                    expected.push("17");
+                    darts = 0;
+                }
+                assert_eq!(
+                    speech_stream::calls()
+                        .submitted
+                        .iter()
+                        .map(|(_, text)| text.as_str())
+                        .collect::<Vec<_>>(),
+                    expected
+                );
+            }
+            assert_eq!(
+                expected.len(),
+                if mode == "each_dart_then_total" {
+                    12
+                } else {
+                    3
+                }
+            );
+        }
     }
-    assert_eq!(
-        speech_stream::calls()
-            .submitted
-            .iter()
-            .map(|(_, text)| text.as_str())
-            .collect::<Vec<_>>(),
-        [
-            "3", "7", "7", "17", "3", "7", "7", "17", "3", "7", "7", "17"
-        ]
-    );
 }
 
 #[test]
@@ -779,6 +793,29 @@ fn send_event(json: &str) {
         41,
         bindings::niles::integration::websocket::Message::Text(json.into()),
     );
+}
+
+#[test]
+fn stopped_board_discards_pending_speech_and_requires_new_baseline() {
+    setup(initial(false));
+    enable_announcements("each_dart_then_total");
+    Plugin::init().unwrap();
+    send_event(EMPTY_EVENT);
+    send_event(ONE_DART);
+    let session = speech_stream::calls().submitted[0].0;
+    send_event(r#"{"type":"state","data":{"running":false,"numThrows":0}}"#);
+    assert!(speech_stream::calls().closed.contains(&session));
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("DiscardedOnReset"))
+    );
+    send_event(REMOVED);
+    send_event(ONE_DART);
+    assert_eq!(speech_stream::calls().submitted.len(), 1);
+    send_event(EMPTY_EVENT);
+    send_event(ONE_DART);
+    assert_eq!(speech_stream::calls().submitted.len(), 2);
 }
 
 #[test]

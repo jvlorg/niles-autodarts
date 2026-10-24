@@ -481,7 +481,13 @@ fn poll_speech() {
     });
 }
 fn speech_status_line(runtime: &Runtime) -> String {
-    let mut parts = Vec::new();
+    let mut parts = vec![if !runtime.speech_enabled {
+        "Speech stream disabled".to_string()
+    } else if runtime.speech_session.is_some() {
+        "Speech stream open".to_string()
+    } else {
+        "Speech stream unavailable".to_string()
+    }];
     if let Some(error) = &runtime.speech_submission_error {
         parts.push(error.clone());
     }
@@ -510,18 +516,7 @@ fn speech_status_line(runtime: &Runtime) -> String {
             .join(", ");
         parts.push(format!("Speech terminal history: {recent}"));
     }
-    if !parts.is_empty() {
-        return parts.join("; ");
-    }
-    if runtime.speech_enabled {
-        if runtime.speech_session.is_some() {
-            "Speech stream open".into()
-        } else {
-            "Speech stream unavailable".into()
-        }
-    } else {
-        "Speech stream disabled".into()
-    }
+    parts.join("; ")
 }
 fn readiness_text(readiness: autodarts_core::AnnouncementReadiness) -> String {
     match readiness {
@@ -980,8 +975,7 @@ impl Guest for Plugin {
                     runtime.announcement_session.connection_reset();
                     runtime.policy_event = None;
                     reopen_speech(runtime);
-                    runtime.websocket_status =
-                        Some("Board event stream connected; baseline required".into());
+                    runtime.websocket_status = Some("Board event stream connected".into());
                 }
                 bindings::niles::integration::websocket::ConnectionStatus::Disconnected(reason) => {
                     invalidate_speech(runtime, "Board event disconnect");
@@ -1010,9 +1004,8 @@ impl Guest for Plugin {
                     invalidate_speech(runtime, "Board event overflow");
                     runtime.policy_event = None;
                     reopen_speech(runtime);
-                    runtime.websocket_status = Some(format!(
-                        "Board event stream overflow ({count}); baseline required"
-                    ));
+                    runtime.websocket_status =
+                        Some(format!("Board event stream overflow ({count})"));
                 }
             }
         });

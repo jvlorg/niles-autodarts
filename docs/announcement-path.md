@@ -2,13 +2,17 @@
 
 Status: the checked-in component has a room-bound Niles speech-stream path and explicit host-outcome bookkeeping. It is an implementation candidate, not an installed or audible proof. Niles retains household and speech authority.
 
-## JVL-13 reduced capture and alpha.2 offline evidence
+## JVL-13 reconstructed fixture and alpha.2 offline evidence
 
-The committed `board-manager-1.0.7-reduced-capture.json` is a reduced projection of the reported 14-envelope Board Manager 1.0.7 messages, not a raw household capture. It starts with a nonempty 3/7/7 collection, preserves the omitted `throws` field on the zero-count clear, and retains the `true/true → true/false → empty → true/true → false/false` motion ordering. That original collection remains silent because no clean baseline preceded it.
+Despite its legacy filename, `board-manager-1.0.7-reduced-capture.json` is a **synthetic reconstruction from the implementation plan**, not a verified projection of the user's captured messages. The implementation handoff records that the original JSON was unavailable; matching its length and described event order does not establish capture provenance. It models a nonempty 3/7/7 collection, omitted `throws` on the zero-count clear, and the described `true/true → true/false → empty → true/true → false/false` ordering. The modelled initial collection remains silent because no clean baseline preceded it. The exact-capture acceptance criterion remains unverified until the human supplies the original reduced payload.
 
 `numThrows: 0` with omitted `throws` is now normalized to the canonical empty state. Explicit empty arrays remain valid; missing/nonzero arrays, nulls, contradictory counts, malformed darts, and out-of-range values remain fail-closed. Typed diagnostics expose policy readiness separately from the last ignored, suppressed, invalid, or processed event. The synthetic continuation fixture is separate and exercises three later identical 3/7/7 collections in both modes; it yields `3,7,7,17` per collection in Each dart → Total and `17` per collection in Total only.
 
 The current local candidate is `v0.1.0-alpha.2`. `bash scripts/verify.sh --quick` passed after the parser/reducer, callback, replay, metadata, and release-gate changes. This remains offline policy/submission evidence: it does not establish installation, live event ordering or miss encoding, household routing, host compatibility, or audible playback.
+
+Review regressions reproduced and fixed duplicate/progressive shrink losing its retained candidate, ambiguous scoring leaving stale readiness, failed total submission demanding a second clear, and stopped-board events leaving speech pending. Collection completion now consumes the boundary independently of adapter success; it never retries the failed total. Callback checks cover both modes, baseline readiness immediately at the omitted-array clear and trailing marker, no dependence on later false flags, and per-event request timing. The continuation no longer inserts an extra baseline that could mask those regressions. The compiled proof waits for rendered post-clear readiness before asserting no prefix submissions; socket writes alone are not processing acknowledgements.
+
+`bash scripts/verify.sh --quick` passed after these policy/callback changes (35 core tests, 26 component tests, replay, Wasm build, strict Clippy and 8 probe tests). `python3 scripts/test_release.py` passed all 9 packaging regressions after tightening the package tag to exact `v0.1.0-alpha.2`, including rejection of a missing `v` prefix. Rendered Text-node assertions are headless surface evidence, not visual-browser or audible verification. Historical candidate hashes below do not identify these review fixes; rebuild and run the full chain from the new clean source commit before publication.
 
 ## Current path
 

@@ -20,7 +20,7 @@ while [[ $# -gt 0 ]]; do
     *) usage; exit 2 ;;
   esac
 done
-if [[ "${tag#v}" != "$version" || -z "$output" ]]; then
+if [[ "$tag" != "v$version" || -z "$output" ]]; then
   usage
   exit 2
 fi

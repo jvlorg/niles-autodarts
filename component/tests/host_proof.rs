@@ -545,8 +545,29 @@ async fn captured_replay(mode: &str, expected: &[&str], label: &str) {
     let (proof, mut socket) = Proof::start(mode).await;
     let capture = fixture_frames(true);
     send(&mut socket, &capture).await;
-    assert!(proof.output.prepared.lock().is_empty());
 
+    // Sending frames only acknowledges the socket write, not guest processing.
+    // Observe the post-clear policy state before claiming prefix silence.
+    tokio::time::timeout(WAIT, async {
+        loop {
+            let surface = proof
+                .runtime
+                .render("autodarts", "board", Context::default())
+                .await
+                .unwrap();
+            let rendered = format!("{surface:?}");
+            if rendered.contains("Policy readiness: collecting (0 darts)")
+                && rendered.contains("InactiveMotion")
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("guest consumes the reconstructed prefix through its empty baseline");
+    assert!(proof.host.trace.lock().requests.is_empty());
+    assert!(proof.output.prepared.lock().is_empty());
     for _ in expected {
         proof.output.allow_one();
     }
@@ -760,13 +781,13 @@ async fn compiled_component_uses_real_niles_speech_scheduler() {
         &[
             "3", "7", "7", "17", "3", "7", "7", "17", "3", "7", "7", "17",
         ],
-        "captured-prefix/each-dart-then-total",
+        "reconstructed-prefix/each-dart-then-total",
     )
     .await;
     captured_replay(
         "total_only",
         &["17", "17", "17"],
-        "captured-prefix/total-only",
+        "reconstructed-prefix/total-only",
     )
     .await;
 }

@@ -91,7 +91,9 @@ fn replay_capture_with_synthetic_continuation(mode: AnnouncementMode) -> Recordi
         );
     }
     assert!(delivery.requests.is_empty());
-    println!("{mode_name}: captured prefix produced no policy submissions");
+    println!(
+        "{mode_name}: reconstructed prefix produced no policy submissions (original capture unavailable)"
+    );
 
     let continuation: serde_json::Value = serde_json::from_slice(include_bytes!(
         "../tests/fixtures/board-manager-1.0.7-synthetic-continuation.json"

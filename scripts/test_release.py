@@ -72,8 +72,8 @@ elif os.environ.get("MISSING_WASM") != "1":
         self.git(repo, "add", ".")
         self.git(repo, "commit", "--quiet", "-m", "fixture")
 
-    def package(self, tag="0.1.0-alpha.2", **env):
-        return subprocess.run(["bash", "scripts/package.sh", "--tag", f"v{tag}",
+    def package(self, tag="v0.1.0-alpha.2", **env):
+        return subprocess.run(["bash", "scripts/package.sh", "--tag", tag,
                                "--output", str(self.output)], cwd=self.root,
                               env={**self.env, **env}, capture_output=True, text=True)
 
@@ -88,9 +88,14 @@ elif os.environ.get("MISSING_WASM") != "1":
         self.commit(self.root)
         self.assert_refused(self.package(), "version mismatch")
         self.assertFalse((self.root / "build").exists())
-    def test_stale_alpha1_tag_is_refused(self):
-        result = self.package(tag="0.1.0-alpha.1")
-        self.assert_refused(result, "Usage:")
+
+    def test_non_candidate_tags_are_refused_before_build(self):
+        for tag in ("v0.1.0-alpha.1", "0.1.0-alpha.2"):
+            with self.subTest(tag=tag):
+                result = self.package(tag=tag)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertFalse(self.output.exists())
+                self.assertFalse((self.root / "build").exists())
 
     def test_wrong_host_revision_is_not_reset(self):
         (self.host / "Cargo.toml").write_text("# another revision\n")
