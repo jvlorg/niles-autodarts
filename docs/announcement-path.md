@@ -2,6 +2,14 @@
 
 Status: the checked-in component has a room-bound Niles speech-stream path and explicit host-outcome bookkeeping. It is an implementation candidate, not an installed or audible proof. Niles retains household and speech authority.
 
+## JVL-13 reduced capture and alpha.2 offline evidence
+
+The committed `board-manager-1.0.7-reduced-capture.json` is a reduced projection of the reported 14-envelope Board Manager 1.0.7 messages, not a raw household capture. It starts with a nonempty 3/7/7 collection, preserves the omitted `throws` field on the zero-count clear, and retains the `true/true → true/false → empty → true/true → false/false` motion ordering. That original collection remains silent because no clean baseline preceded it.
+
+`numThrows: 0` with omitted `throws` is now normalized to the canonical empty state. Explicit empty arrays remain valid; missing/nonzero arrays, nulls, contradictory counts, malformed darts, and out-of-range values remain fail-closed. Typed diagnostics expose policy readiness separately from the last ignored, suppressed, invalid, or processed event. The synthetic continuation fixture is separate and exercises three later identical 3/7/7 collections in both modes; it yields `3,7,7,17` per collection in Each dart → Total and `17` per collection in Total only.
+
+The current local candidate is `v0.1.0-alpha.2`. `bash scripts/verify.sh --quick` passed after the parser/reducer, callback, replay, metadata, and release-gate changes. This remains offline policy/submission evidence: it does not establish installation, live event ordering or miss encoding, household routing, host compatibility, or audible playback.
+
 ## Current path
 
 The component opens Board Manager `/api/events` when announcement intent is enabled. `speech_stream_enabled` separately gates a room-bound stream for the configured room. `AnnouncementSession` parses bounded text frames and emits numeric request intent. The component submits text to Niles, records host request IDs, polls status, and closes the stream on stop or reset. HTTP `/api/state` remains status/baseline-only.

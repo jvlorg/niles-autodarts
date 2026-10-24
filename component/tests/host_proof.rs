@@ -522,6 +522,49 @@ impl Proof {
     }
 }
 
+fn fixture_frames(capture: bool) -> Vec<&'static str> {
+    let source = if capture {
+        include_str!(
+            "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-reduced-capture.json"
+        )
+    } else {
+        include_str!(
+            "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-synthetic-continuation.json"
+        )
+    };
+    source
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            line.strip_prefix('{')
+                .map(|_| line.trim_end_matches(','))
+        })
+        .collect()
+}
+
+async fn captured_replay(mode: &str, expected: &[&str], label: &str) {
+    let (proof, mut socket) = Proof::start(mode).await;
+    let capture = fixture_frames(true);
+    send(&mut socket, &capture).await;
+    assert!(proof.output.prepared.lock().is_empty());
+
+    for _ in expected {
+        proof.output.allow_one();
+    }
+    let continuation = fixture_frames(false);
+    send(&mut socket, &continuation).await;
+    proof.host.submissions(expected.len()).await;
+    proof.host.terminals(expected.len()).await;
+    let expected_requests: Vec<_> = expected
+        .iter()
+        .map(|text| (*text, SpeechOutcome::Delivered))
+        .collect();
+    proof.host.assert_requests(&expected_requests);
+    proof.output.assert_delivered("living_room", expected);
+    proof.finish(label, expected.len()).await;
+    drop(socket);
+}
+
 async fn ordered_and_repeated_removal() {
     let (proof, mut socket) = Proof::start("each_dart_then_total").await;
     send(&mut socket, &[BASELINE]).await;
@@ -713,4 +756,18 @@ async fn compiled_component_uses_real_niles_speech_scheduler() {
     burst_replacement().await;
     total_only().await;
     close_reconnect_and_room_switch().await;
+    captured_replay(
+        "each_dart_then_total",
+        &[
+            "3", "7", "7", "17", "3", "7", "7", "17", "3", "7", "7", "17",
+        ],
+        "captured-prefix/each-dart-then-total",
+    )
+    .await;
+    captured_replay(
+        "total_only",
+        &["17", "17", "17"],
+        "captured-prefix/total-only",
+    )
+    .await;
 }

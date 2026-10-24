@@ -66,6 +66,49 @@ fn replay_mode(mode: AnnouncementMode) -> RecordingDelivery {
     delivery
 }
 
+fn replay_capture_with_synthetic_continuation(mode: AnnouncementMode) -> RecordingDelivery {
+    let mode_name = match mode {
+        AnnouncementMode::EachDartThenTotal => "each_dart_then_total",
+        AnnouncementMode::TotalOnly => "total_only",
+    };
+    let settings = AnnouncementSettings::new(true, Some(mode_name), "living_room")
+        .expect("valid replay settings");
+    let mut session = AnnouncementSession::new(settings);
+    let mut delivery = RecordingDelivery::default();
+    let capture: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../tests/fixtures/board-manager-1.0.7-reduced-capture.json"
+    ))
+    .expect("valid reduced capture");
+    for envelope in capture.as_array().expect("capture array") {
+        let json = serde_json::to_vec(envelope).expect("capture envelope");
+        run(
+            &mut session,
+            &mut delivery,
+            std::str::from_utf8(&json).expect("capture JSON"),
+        );
+    }
+    assert!(delivery.requests.is_empty());
+    println!("{mode_name}: captured prefix produced no policy submissions");
+
+    let continuation: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../tests/fixtures/board-manager-1.0.7-synthetic-continuation.json"
+    ))
+    .expect("valid synthetic continuation");
+    for envelope in continuation.as_array().expect("continuation array") {
+        let json = serde_json::to_vec(envelope).expect("continuation envelope");
+        run(
+            &mut session,
+            &mut delivery,
+            std::str::from_utf8(&json).expect("continuation JSON"),
+        );
+    }
+    println!(
+        "{mode_name}: synthetic continuation accepted {} policy submissions",
+        delivery.requests.len()
+    );
+    delivery
+}
+
 fn main() {
     println!(
         "Synthetic source-derived replay (not captures): settings → JSON → session → recording"
@@ -90,6 +133,27 @@ fn main() {
             .map(|request| request.text.as_str())
             .collect::<Vec<_>>(),
         ["26", "26", "26"]
+    );
+    let captured_each =
+        replay_capture_with_synthetic_continuation(AnnouncementMode::EachDartThenTotal);
+    assert_eq!(
+        captured_each
+            .requests
+            .iter()
+            .map(|request| request.text.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "3", "7", "7", "17", "3", "7", "7", "17", "3", "7", "7", "17"
+        ]
+    );
+    let captured_total = replay_capture_with_synthetic_continuation(AnnouncementMode::TotalOnly);
+    assert_eq!(
+        captured_total
+            .requests
+            .iter()
+            .map(|request| request.text.as_str())
+            .collect::<Vec<_>>(),
+        ["17", "17", "17"]
     );
     for request in each.requests.iter().chain(total.requests.iter()) {
         println!(

@@ -6,6 +6,10 @@ pub use announcement_session::AnnouncementSession;
 pub mod announcement_session;
 pub mod detection;
 pub mod local_score;
+pub use local_score::{
+    AnnouncementDiagnostics, AnnouncementDisposition, AnnouncementEvent, AnnouncementReadiness,
+    AnnouncementReason,
+};
 
 pub const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 pub const DEFAULT_TIMEOUT_MS: u32 = 2_000;

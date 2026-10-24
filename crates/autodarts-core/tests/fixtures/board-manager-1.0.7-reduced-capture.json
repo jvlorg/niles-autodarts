@@ -1,0 +1,16 @@
+[
+  {"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"number":3,"multiplier":1}}]}},
+  {"type":"state","data":{"running":true,"numThrows":2,"throws":[{"segment":{"number":3,"multiplier":1}},{"segment":{"number":7,"multiplier":1}}]}},
+  {"type":"state","data":{"running":true,"numThrows":3,"throws":[{"segment":{"number":3,"multiplier":1}},{"segment":{"number":7,"multiplier":1}},{"segment":{"number":7,"multiplier":1}}]}},
+  {"type":"motion_state","data":{"isTakeoutPartial":true,"isTakeoutFull":true}},
+  {"type":"motion_state","data":{"isTakeoutPartial":true,"isTakeoutFull":false}},
+  {"type":"state","data":{"running":true,"numThrows":0}},
+  {"type":"motion_state","data":{"isTakeoutPartial":true,"isTakeoutFull":true}},
+  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
+  {"type":"state","data":{"running":true,"numThrows":0}},
+  {"type":"state","data":{"running":true,"numThrows":0,"throws":[]}},
+  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
+  {"type":"state","data":{"running":true,"numThrows":0}},
+  {"type":"state","data":{"running":true,"numThrows":0,"throws":[]}},
+  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}}
+]

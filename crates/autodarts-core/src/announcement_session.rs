@@ -1,4 +1,7 @@
-use crate::local_score::{JourneyResult, LocalEvent, LocalJourney, parse_json};
+use crate::local_score::{
+    AnnouncementDiagnostics, AnnouncementReadiness, JourneyResult, LocalEvent, LocalJourney,
+    parse_json,
+};
 use crate::{AnnouncementDelivery, AnnouncementSettings};
 
 /// Transport-independent owner for one configured Board Manager connection.
@@ -17,6 +20,16 @@ impl AnnouncementSession {
     }
     pub fn settings(&self) -> &AnnouncementSettings {
         &self.settings
+    }
+    pub fn diagnostics(&self) -> AnnouncementDiagnostics {
+        let mut diagnostics = self.journey.diagnostics();
+        if self.settings.enabled
+            && self.settings.mode.is_some()
+            && diagnostics.readiness == AnnouncementReadiness::Disabled
+        {
+            diagnostics.readiness = AnnouncementReadiness::AwaitingBaseline;
+        }
+        diagnostics
     }
     /// Apply validated settings. Any change invalidates collection state and requires a clean baseline.
     pub fn reconfigure(&mut self, settings: AnnouncementSettings) {
@@ -164,6 +177,38 @@ mod tests {
         assert_eq!(
             session.ingest_json(FULL.as_bytes(), &mut delivery),
             JourneyResult::Suppressed
+        );
+    }
+    #[test]
+    fn captured_prefix_stays_silent_and_continuation_announces_three_rounds() {
+        let mut session =
+            AnnouncementSession::new(settings(true, "each_dart_then_total", "living_room"));
+        let mut delivery = RecordingDelivery::default();
+        let capture: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../tests/fixtures/board-manager-1.0.7-reduced-capture.json"
+        ))
+        .unwrap();
+        for envelope in capture.as_array().unwrap() {
+            session.ingest_json(&serde_json::to_vec(envelope).unwrap(), &mut delivery);
+        }
+        assert!(delivery.requests.is_empty());
+
+        let continuation: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../tests/fixtures/board-manager-1.0.7-synthetic-continuation.json"
+        ))
+        .unwrap();
+        for envelope in continuation.as_array().unwrap() {
+            session.ingest_json(&serde_json::to_vec(envelope).unwrap(), &mut delivery);
+        }
+        assert_eq!(
+            delivery
+                .requests
+                .iter()
+                .map(|request| request.text.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "3", "7", "7", "17", "3", "7", "7", "17", "3", "7", "7", "17"
+            ]
         );
     }
 }

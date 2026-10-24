@@ -377,6 +377,57 @@ fn websocket_callback_drives_each_dart_and_total_after_clean_baseline() {
         [(7, "20".into()), (7, "5".into()), (7, "25".into())]
     );
 }
+#[test]
+fn reduced_capture_uses_actual_callback_and_keeps_following_rounds_eligible() {
+    setup(initial(false));
+    enable_announcements("each_dart_then_total");
+    Plugin::init().unwrap();
+    websocket::status(
+        41,
+        bindings::niles::integration::websocket::ConnectionStatus::Connected,
+    );
+    let capture: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-reduced-capture.json"
+    ))
+    .unwrap();
+    for envelope in capture.as_array().unwrap() {
+        websocket::message(
+            41,
+            bindings::niles::integration::websocket::Message::Text(
+                serde_json::to_string(envelope).unwrap(),
+            ),
+        );
+    }
+    assert!(speech_stream::calls().submitted.is_empty());
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("Policy readiness"))
+    );
+
+    let continuation: serde_json::Value = serde_json::from_slice(include_bytes!(
+        "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-synthetic-continuation.json"
+    ))
+    .unwrap();
+    for envelope in continuation.as_array().unwrap() {
+        websocket::message(
+            41,
+            bindings::niles::integration::websocket::Message::Text(
+                serde_json::to_string(envelope).unwrap(),
+            ),
+        );
+    }
+    assert_eq!(
+        speech_stream::calls()
+            .submitted
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "3", "7", "7", "17", "3", "7", "7", "17", "3", "7", "7", "17"
+        ]
+    );
+}
 
 #[test]
 fn websocket_disconnect_requires_new_baseline_and_ignores_stale_callbacks() {
@@ -479,6 +530,27 @@ fn malformed_websocket_frames_invalidate_without_false_speech() {
         bindings::niles::integration::websocket::Message::Text(REMOVED.into()),
     );
     assert!(speech_stream::calls().submitted.is_empty());
+}
+#[test]
+fn invalid_callback_keeps_reason_while_resetting_readiness() {
+    setup(initial(false));
+    enable_announcements("total_only");
+    Plugin::init().unwrap();
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text("{bad".into()),
+    );
+    let rendered = render_text();
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line == "Policy readiness: awaiting baseline")
+    );
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line.contains("Last policy event: Invalid (InvalidInput)"))
+    );
 }
 
 #[test]

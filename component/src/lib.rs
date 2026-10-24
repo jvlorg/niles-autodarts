@@ -48,6 +48,7 @@ thread_local! { static RUNTIME: RefCell<Option<Runtime>> = const { RefCell::new(
 struct Runtime {
     announcements: autodarts_core::AnnouncementSettings,
     announcement_session: autodarts_core::AnnouncementSession,
+    policy_event: Option<autodarts_core::AnnouncementEvent>,
     config: Config,
     snapshot: Snapshot,
     command_status: Option<String>,
@@ -350,9 +351,13 @@ fn ingest_announcement_json(json: &[u8]) -> autodarts_core::local_score::Journey
         let result = runtime
             .announcement_session
             .ingest_json(json, &mut delivery);
+        let policy_event = runtime.announcement_session.diagnostics().last_event;
         if result == autodarts_core::local_score::JourneyResult::Invalid {
+            runtime.policy_event = policy_event;
             invalidate_speech(runtime, "invalid Board event");
             reopen_speech(runtime);
+        } else {
+            runtime.policy_event = policy_event;
         }
         result
     })
@@ -519,6 +524,24 @@ fn speech_status_line(runtime: &Runtime) -> String {
     } else {
         "Speech stream disabled".into()
     }
+}
+fn readiness_text(readiness: autodarts_core::AnnouncementReadiness) -> String {
+    match readiness {
+        autodarts_core::AnnouncementReadiness::Disabled => "disabled".into(),
+        autodarts_core::AnnouncementReadiness::AwaitingBaseline => "awaiting baseline".into(),
+        autodarts_core::AnnouncementReadiness::Collecting { dart_count } => {
+            format!("collecting ({dart_count} darts)")
+        }
+        autodarts_core::AnnouncementReadiness::AwaitingRemoval => "awaiting removal".into(),
+        autodarts_core::AnnouncementReadiness::AwaitingClear => "awaiting clear".into(),
+    }
+}
+
+fn policy_event_text(event: Option<autodarts_core::AnnouncementEvent>) -> String {
+    let Some(event) = event else {
+        return "none".into();
+    };
+    format!("{:?} ({:?})", event.disposition, event.reason)
 }
 struct HostTransport;
 impl Transport for HostTransport {
@@ -715,6 +738,7 @@ impl Guest for Plugin {
                 announcement_session: autodarts_core::AnnouncementSession::new(
                     announcements.clone(),
                 ),
+                policy_event: None,
                 announcements,
                 config,
                 snapshot: Snapshot {
@@ -845,22 +869,32 @@ impl Guest for Plugin {
         if surface != "board" {
             return Err("Unknown Autodarts surface.".into());
         }
-        let (snapshot, status, announcements, speech_status, speech_enabled, websocket_status) =
-            RUNTIME.with(|slot| {
-                slot.borrow()
-                    .as_ref()
-                    .map(|runtime| {
-                        (
-                            runtime.snapshot.clone(),
-                            runtime.command_status.clone(),
-                            runtime.announcements.clone(),
-                            speech_status_line(runtime),
-                            runtime.speech_enabled,
-                            runtime.websocket_status.clone(),
-                        )
-                    })
-                    .ok_or_else(|| "Autodarts is not configured.".to_string())
-            })?;
+        let (
+            snapshot,
+            status,
+            announcements,
+            diagnostics,
+            policy_event,
+            speech_status,
+            speech_enabled,
+            websocket_status,
+        ) = RUNTIME.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .map(|runtime| {
+                    (
+                        runtime.snapshot.clone(),
+                        runtime.command_status.clone(),
+                        runtime.announcements.clone(),
+                        runtime.announcement_session.diagnostics(),
+                        runtime.policy_event,
+                        speech_status_line(runtime),
+                        runtime.speech_enabled,
+                        runtime.websocket_status.clone(),
+                    )
+                })
+                .ok_or_else(|| "Autodarts is not configured.".to_string())
+        })?;
         let mut tree = render_tree(&snapshot, status.as_deref());
         let lines = vec![
             format!(
@@ -881,6 +915,14 @@ impl Guest for Plugin {
                 }
             ),
             format!("Announcement room: {}", announcements.room),
+            format!(
+                "Policy readiness: {}",
+                readiness_text(diagnostics.readiness)
+            ),
+            format!(
+                "Last policy event: {}",
+                policy_event_text(policy_event.or(diagnostics.last_event))
+            ),
             format!(
                 "Speech stream setting: {}",
                 if speech_enabled {
@@ -938,17 +980,20 @@ impl Guest for Plugin {
             match status {
                 bindings::niles::integration::websocket::ConnectionStatus::Connected => {
                     runtime.announcement_session.connection_reset();
+                    runtime.policy_event = None;
                     reopen_speech(runtime);
                     runtime.websocket_status =
                         Some("Board event stream connected; baseline required".into());
                 }
                 bindings::niles::integration::websocket::ConnectionStatus::Disconnected(reason) => {
                     invalidate_speech(runtime, "Board event disconnect");
+                    runtime.policy_event = None;
                     runtime.websocket_status =
                         Some(format!("Board event stream reconnecting: {reason}"));
                 }
                 bindings::niles::integration::websocket::ConnectionStatus::Failed(kind) => {
                     invalidate_speech(runtime, "Board event failure");
+                    runtime.policy_event = None;
                     let reason = match kind {
                         bindings::niles::integration::websocket::FailureKind::Policy => {
                             "policy denied"
@@ -965,6 +1010,7 @@ impl Guest for Plugin {
                 }
                 bindings::niles::integration::websocket::ConnectionStatus::Overflow(count) => {
                     invalidate_speech(runtime, "Board event overflow");
+                    runtime.policy_event = None;
                     reopen_speech(runtime);
                     runtime.websocket_status = Some(format!(
                         "Board event stream overflow ({count}); baseline required"

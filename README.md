@@ -1,6 +1,6 @@
 # Niles Autodarts
 
-Standalone [Niles](https://github.com/MarkNygaard/niles) add-on for local Autodarts Board Manager status, detection control, and detection-derived commentary. The implementation targets Niles 0.5.0 and interface 0.5. The alpha candidate is local only; no release has been published or installed.
+Standalone [Niles](https://github.com/MarkNygaard/niles) add-on for local Autodarts Board Manager status, detection control, and detection-derived commentary. The implementation targets Niles 0.5.0 and interface 0.5. The `v0.1.0-alpha.2` candidate is local only; no release has been published or installed.
 
 ## Contract
 
@@ -20,10 +20,10 @@ Core parser/session tests and `cargo run -p autodarts-core --example announcemen
 
 The sole host pin is `scripts/niles-host-revision` (`4f3c0a10b2accd022354a23b9f961b222c27eb56`). `bash scripts/prepare-host.sh` verifies a detached, clean checkout under `.cache/niles` and builds its CLI. `bash scripts/verify.sh --quick` runs local Rust checks, the replay, maintained probe, and guidance-file equality. Full verification additionally runs pinned WIT comparison, packaging, the exact-package host diagnostic, the compiled proof, checksum verification, and workflow syntax checks.
 
-Use `bash scripts/package.sh --tag v0.1.0-alpha.1 --output dist/v0.1.0-alpha.1` from a clean tracked source commit and a fresh output directory. The package contains the exact checked manifest/Wasm, `SHA256SUMS`, and `provenance.json`. Full verification also needs `uv`, `actionlint`, the Wasm target and the pinned host's build prerequisites. The compiled synthetic fixture requires free loopback port 3180; the candidate's declared WebSocket permissions do not allow an ephemeral port. [Announcement-path evidence](docs/announcement-path.md) records the exercised scenarios and remaining proof boundaries.
+Use `bash scripts/package.sh --tag v0.1.0-alpha.2 --output dist/v0.1.0-alpha.2` from a clean tracked source commit and a fresh output directory. The package contains the exact checked manifest/Wasm, `SHA256SUMS`, and `provenance.json`. Full verification also needs `uv`, `actionlint`, the Wasm target and the pinned host's build prerequisites. The compiled synthetic fixture requires free loopback port 3180; the candidate's declared WebSocket permissions do not allow an ephemeral port. [Announcement-path evidence](docs/announcement-path.md) records the reduced captured projection, separate synthetic continuation, exercised scenarios, and remaining proof boundaries.
 
 Before publication, a repository administrator must configure required reviewers on the `alpha-release` environment, then set repository variable `ALPHA_RELEASE_APPROVAL_CONFIGURED=true`. The workflow fails closed without that acknowledgment; the variable alone does not configure protection. Manual `publish=false` validates without entering publication. No protected-environment approval or publication is implied by local workflow checks.
 
-The alpha package route, after an approved publication, is [Niles Autodarts v0.1.0-alpha.1](https://github.com/jvlorg/niles-autodarts/releases/tag/v0.1.0-alpha.1): Niles Preview → add the exact release URL → inspect the manifest and permissions → explicitly approve. This URL is an installation route, not evidence that publication has occurred.
+The reported alpha.1 installation/connection observation remains historical, not independently verified installation evidence. After approved publication, the current alpha.2 route is [Niles Autodarts v0.1.0-alpha.2](https://github.com/jvlorg/niles-autodarts/releases/tag/v0.1.0-alpha.2): Niles Preview → add the exact release URL → inspect the manifest and permissions → explicitly approve. This URL is an installation route, not evidence that publication has occurred.
 
 Keep credentials, household captures, private configuration, generated candidates, and host caches out of Git. Do not perform live device writes, audible tests, installations, deployments, pushes, or release publication without explicit approval.
