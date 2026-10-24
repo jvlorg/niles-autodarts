@@ -95,6 +95,51 @@ fn composed_device_start_stop_preserve_identity_and_exact_provider_calls() {
 }
 
 #[test]
+fn confirmed_detection_restart_reopens_speech_stream() {
+    setup(initial(false));
+    enable_announcements("total_only");
+    Plugin::init().unwrap();
+    send_event(EMPTY_EVENT);
+    send_event(ONE_DART);
+    send_event(REMOVED);
+    assert_eq!(speech_stream::calls().submitted.len(), 1);
+    let first_session = speech_stream::calls().submitted[0].0;
+
+    http::set_replies([
+        Ok(http::Response {
+            status: 204,
+            headers: vec![],
+            body: vec![],
+        }),
+        response(r#"{"connected":true,"running":false}"#),
+    ]);
+    assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(false))).is_ok());
+    assert_eq!(speech_stream::calls().closed, [first_session]);
+
+    http::set_replies([
+        Ok(http::Response {
+            status: 204,
+            headers: vec![],
+            body: vec![],
+        }),
+        response(r#"{"connected":true,"running":true}"#),
+    ]);
+    assert!(Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).is_ok());
+    let calls = speech_stream::calls();
+    assert_eq!(calls.opened_sessions.len(), 2);
+    assert_eq!(calls.opened_sessions[1].1, "living_room");
+
+    send_event(EMPTY_EVENT);
+    send_event(ONE_DART);
+    send_event(REMOVED);
+    assert_eq!(speech_stream::calls().submitted.len(), 2);
+    assert_eq!(
+        speech_stream::calls().submitted[1].0,
+        calls.opened_sessions[1].0
+    );
+}
+
+#[test]
 fn composed_acknowledged_but_observed_false_returns_pending_and_keeps_actual_state() {
     setup(initial(false));
     Plugin::init().unwrap();

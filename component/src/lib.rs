@@ -989,6 +989,8 @@ impl Guest for Plugin {
             runtime.command_status = Some(command_status);
             if matches!(outcome, DetectionResult::Confirmed(false)) {
                 invalidate_speech(runtime, "detection stopped");
+            } else if matches!(outcome, DetectionResult::Confirmed(true)) {
+                reopen_speech(runtime);
             }
             report(runtime)?;
             ui::invalidate("board");
