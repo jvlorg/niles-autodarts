@@ -37,11 +37,11 @@ bash scripts/prepare-host.sh
 cmp component/wit/niles-integration.wit .cache/niles/schemas/niles-integration-0.5.wit
 cargo +"$toolchain" fmt --manifest-path component/host-proof/Cargo.toml --all -- --check
 cargo +"$toolchain" clippy --locked --manifest-path component/host-proof/Cargo.toml --all-targets -- -D warnings
-bash scripts/package.sh --tag v0.1.0-alpha.2 --output dist/v0.1.0-alpha.2
-python3 scripts/verify-host.py "$host_target_dir/debug/niles" --package-dir dist/v0.1.0-alpha.2
-NILES_COMPONENT_WASM="$root/dist/v0.1.0-alpha.2/integration.wasm" \
+bash scripts/package.sh --tag v0.1.0-alpha.3 --output dist/v0.1.0-alpha.3
+python3 scripts/verify-host.py "$host_target_dir/debug/niles" --package-dir dist/v0.1.0-alpha.3
+NILES_COMPONENT_WASM="$root/dist/v0.1.0-alpha.3/integration.wasm" \
   cargo +"$toolchain" test --locked --manifest-path component/host-proof/Cargo.toml -- --nocapture
 uv run --with websockets==15.0.1 python scripts/test_probe_board.py
-(cd dist/v0.1.0-alpha.2 && sha256sum --check SHA256SUMS)
+(cd dist/v0.1.0-alpha.3 && sha256sum --check SHA256SUMS)
 actionlint .github/workflows/release.yml
 cmp AGENTS.md CLAUDE.md
