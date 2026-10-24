@@ -1,4 +1,6 @@
-use crate::local_score::{JourneyResult, LocalEvent, LocalJourney, parse_json};
+use crate::local_score::{
+    JourneyDecision, JourneyReadiness, JourneyResult, LocalEvent, LocalJourney, parse_json,
+};
 use crate::{AnnouncementDelivery, AnnouncementSettings};
 
 /// Transport-independent owner for one configured Board Manager connection.
@@ -17,6 +19,16 @@ impl AnnouncementSession {
     }
     pub fn settings(&self) -> &AnnouncementSettings {
         &self.settings
+    }
+    pub fn readiness(&self) -> JourneyReadiness {
+        if !self.settings.enabled || self.settings.mode.is_none() {
+            JourneyReadiness::Disabled
+        } else {
+            self.journey.readiness(true)
+        }
+    }
+    pub fn last_decision(&self) -> Option<JourneyDecision> {
+        self.journey.last_decision()
     }
     /// Apply validated settings. Any change invalidates collection state and requires a clean baseline.
     pub fn reconfigure(&mut self, settings: AnnouncementSettings) {
@@ -165,5 +177,29 @@ mod tests {
             session.ingest_json(FULL.as_bytes(), &mut delivery),
             JourneyResult::Suppressed
         );
+    }
+
+    #[test]
+    fn capture_ingress_exposes_readiness_and_resets_diagnostics() {
+        let mut session = AnnouncementSession::new(settings(true, "total_only", "living_room"));
+        let mut delivery = RecordingDelivery::default();
+        let capture: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/board-manager-1.0.7-reduced-capture.json"
+        ))
+        .unwrap();
+        for envelope in capture.as_array().unwrap() {
+            session.ingest_json(envelope.to_string().as_bytes(), &mut delivery);
+        }
+        assert_eq!(
+            session.readiness(),
+            JourneyReadiness::Collecting { darts: 0 }
+        );
+        assert_eq!(
+            session.last_decision(),
+            Some(JourneyDecision::SuppressedAmbiguous)
+        );
+        session.connection_reset();
+        assert_eq!(session.readiness(), JourneyReadiness::AwaitingBaseline);
+        assert_eq!(session.last_decision(), None);
     }
 }

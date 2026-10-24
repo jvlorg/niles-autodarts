@@ -25,6 +25,13 @@ const DART_THREE: &str = r#"{"type":"state","data":{"running":true,"numThrows":3
 const PARTIAL: &str = r#"{"type":"motion_state","data":{"isTakeoutPartial":true}}"#;
 const FULL: &str = r#"{"type":"motion_state","data":{"isTakeoutFull":true}}"#;
 const WAIT: Duration = Duration::from_secs(15);
+const CAPTURE: &str = include_str!(
+    "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-reduced-capture.json"
+);
+const CAPTURE_DART_ONE: &str = r#"{"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"number":3,"multiplier":1}}]}}"#;
+const CAPTURE_DART_TWO: &str = r#"{"type":"state","data":{"running":true,"numThrows":2,"throws":[{"segment":{"number":3,"multiplier":1}},{"segment":{"number":7,"multiplier":1}}]}}"#;
+const CAPTURE_DART_THREE: &str = r#"{"type":"state","data":{"running":true,"numThrows":3,"throws":[{"segment":{"number":3,"multiplier":1}},{"segment":{"number":7,"multiplier":1}},{"segment":{"number":7,"multiplier":1}}]}}"#;
+const CAPTURE_EMPTY: &str = r#"{"type":"state","data":{"running":true,"numThrows":0}}"#;
 type Prepared = (String, String);
 type Socket = WebSocketStream<TcpStream>;
 type Outcomes = Vec<(u64, SpeechOutcome)>;
@@ -425,6 +432,24 @@ async fn send(socket: &mut Socket, frames: &[&str]) {
     }
 }
 
+fn capture_frames() -> Vec<String> {
+    CAPTURE
+        .lines()
+        .map(str::trim)
+        .filter(|line| !matches!(*line, "[" | "]" | ""))
+        .map(|line| line.trim_end_matches(',').to_owned())
+        .collect()
+}
+
+async fn send_owned(socket: &mut Socket, frames: &[String]) {
+    for frame in frames {
+        socket
+            .send(Message::Text(frame.clone().into()))
+            .await
+            .unwrap();
+    }
+}
+
 struct Proof {
     runtime: Runtime,
     settings: Arc<Mutex<toml::Table>>,
@@ -524,32 +549,45 @@ impl Proof {
 
 async fn ordered_and_repeated_removal() {
     let (proof, mut socket) = Proof::start("each_dart_then_total").await;
-    send(&mut socket, &[BASELINE]).await;
-    for (index, frame) in [DART, DART_TWO, DART_THREE, PARTIAL]
-        .into_iter()
-        .enumerate()
+    let capture = capture_frames();
+    send_owned(&mut socket, &capture).await;
+    assert!(proof.host.trace.lock().requests.is_empty());
+    for (index, frame) in [
+        CAPTURE_DART_ONE,
+        CAPTURE_DART_TWO,
+        CAPTURE_DART_THREE,
+        PARTIAL,
+    ]
+    .into_iter()
+    .enumerate()
     {
         proof.output.allow_one();
         send(&mut socket, &[frame]).await;
         proof.host.terminals(index + 1).await;
     }
-    // The next clean collection is a positive barrier: all preceding repeated
-    // markers must have been processed, without timing-based silence assertions.
-    send(&mut socket, &[PARTIAL, FULL, FULL, BASELINE]).await;
-    proof.output.allow_one();
-    send(&mut socket, &[DART]).await;
-    proof.host.terminals(5).await;
+    send(&mut socket, &[PARTIAL, FULL, FULL, CAPTURE_EMPTY]).await;
+    for (index, frame) in [CAPTURE_DART_ONE, CAPTURE_DART_TWO, CAPTURE_DART_THREE, FULL]
+        .into_iter()
+        .enumerate()
+    {
+        proof.output.allow_one();
+        send(&mut socket, &[frame]).await;
+        proof.host.terminals(index + 5).await;
+    }
     proof.host.assert_requests(&[
-        ("20", SpeechOutcome::Delivered),
-        ("5", SpeechOutcome::Delivered),
-        ("1", SpeechOutcome::Delivered),
-        ("26", SpeechOutcome::Delivered),
-        ("20", SpeechOutcome::Delivered),
+        ("3", SpeechOutcome::Delivered),
+        ("7", SpeechOutcome::Delivered),
+        ("7", SpeechOutcome::Delivered),
+        ("17", SpeechOutcome::Delivered),
+        ("3", SpeechOutcome::Delivered),
+        ("7", SpeechOutcome::Delivered),
+        ("7", SpeechOutcome::Delivered),
+        ("17", SpeechOutcome::Delivered),
     ]);
     proof
         .output
-        .assert_delivered("living_room", &["20", "5", "1", "26", "20"]);
-    proof.finish("ordered/repeated-removal", 5).await;
+        .assert_delivered("living_room", &["3", "7", "7", "17", "3", "7", "7", "17"]);
+    proof.finish("capture/synthetic-repeated-removal", 8).await;
     drop(socket);
 }
 
@@ -577,23 +615,42 @@ async fn burst_replacement() {
 
 async fn total_only() {
     let (proof, mut socket) = Proof::start("total_only").await;
-    proof.output.allow_one();
+    let capture = capture_frames();
+    send_owned(&mut socket, &capture).await;
+    assert!(proof.host.trace.lock().requests.is_empty());
     send(
         &mut socket,
-        &[BASELINE, DART, DART_TWO, DART_THREE, BASELINE, FULL],
+        &[
+            CAPTURE_DART_ONE,
+            CAPTURE_DART_TWO,
+            CAPTURE_DART_THREE,
+            CAPTURE_EMPTY,
+        ],
     )
     .await;
-    proof.host.terminals(1).await;
     proof.output.allow_one();
-    send(&mut socket, &[PARTIAL, FULL, BASELINE, DART, PARTIAL]).await;
+    send(&mut socket, &[FULL]).await;
+    proof.host.terminals(1).await;
+    send(
+        &mut socket,
+        &[
+            CAPTURE_EMPTY,
+            CAPTURE_DART_ONE,
+            CAPTURE_DART_TWO,
+            CAPTURE_DART_THREE,
+        ],
+    )
+    .await;
+    proof.output.allow_one();
+    send(&mut socket, &[PARTIAL]).await;
     proof.host.terminals(2).await;
     proof.host.assert_requests(&[
-        ("26", SpeechOutcome::Delivered),
-        ("20", SpeechOutcome::Delivered),
+        ("17", SpeechOutcome::Delivered),
+        ("17", SpeechOutcome::Delivered),
     ]);
-    proof.output.assert_delivered("living_room", &["26", "20"]);
+    proof.output.assert_delivered("living_room", &["17", "17"]);
     proof
-        .finish("total-only/clear-before-marker/repeated-removal", 2)
+        .finish("capture/total-only/clear-before-marker", 2)
         .await;
     drop(socket);
 }

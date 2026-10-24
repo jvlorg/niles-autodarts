@@ -8,9 +8,29 @@ The component opens Board Manager `/api/events` when announcement intent is enab
 
 The component distinguishes accepted submission from delivery. Pending requests remain visible across polling failures; terminal outcomes are retained individually; no utterance is retried automatically. Reconnect, disablement, settings changes, overflow, and malformed/binary/oversized ingress invalidate the speech generation and locally discard unresolved requests. Old connection IDs are ignored. Overflow does not imply a new WebSocket connection: speech reopens without waiting for a nonexistent Connected callback. Because released host close is asynchronous, an unavailable reopen can resume on subsequent event/timer callbacks without replaying attempted commentary.
 
+
+## Captured input and fixed contract
+
+The authorized reduced fixture at `crates/autodarts-core/tests/fixtures/board-manager-1.0.7-reduced-capture.json` contains 14 JSON envelopes in the reported order: an initial nonempty 3/7/7 collection, its removal markers, an omitted-array zero-count state, unrelated status/camera events, and the trailing marker. It contains no invented baseline, timestamps, credentials, household data, or restored camera coordinates. The fixture is a reduced capture projection; subsequent 3/7/7 rounds in replay, Guest callbacks, and host proof are explicitly synthetic.
+
+At the parser boundary, integer `numThrows: 0` with an absent `throws` member normalizes to the same empty snapshot as `throws: []`. Explicit `throws: null`, nonzero/unknown/malformed omitted-array counts, zero with nonempty throws, wrong-type arrays, count mismatches, and invalid segments remain rejected. Readiness is projected from reducer phase and validated state, not from the historical `Baseline` result variant.
+
+Rendered diagnostics keep five boundaries separate: Board event transport, reducer readiness and last ingress disposition, room speech availability, adapter submission acceptance/failure, and host request outcomes. `Accepted` means the adapter accepted a request; `Delivered` and other terminal values are host-reported outcomes, not measured audio. Pending requests survive polling errors and remain bounded; invalid input/reset discards stale pending speech, while ignored or duplicate events do not.
 ## Modes and scheduler constraint
 
 `Each dart → Total` submits each eligible dart and then the total. `Total only` submits only the total at the first explicit partial/full removal marker. These are detection-derived local values, not game-authoritative scores. The released Niles scheduler permits one replaceable pending request; therefore `Accepted` does not promise that every rapid utterance reaches a satellite. This is a host scheduling contract, not a reason to invent an add-on retry queue.
+
+## Alpha.2 retest checklist
+
+The approved installed retest remains pending: install only the exact fresh alpha.2 candidate after publication approval; establish a clean omitted-array or explicit-empty baseline; exercise both modes across successive rounds; observe Board Manager event ordering and miss encoding; verify configured-room stream opening and selected-satellite routing; inspect every host outcome; and separately observe audible output. None of those live or audible observations is implied by this local implementation.
+
+## Current local verification
+
+- `cargo +1.99.0 test -p autodarts-core board_manager_1_0_7 -- --nocapture`: passed.
+- `cargo +1.99.0 test -p niles-autodarts-component board_manager_1_0_7 -- --nocapture`: passed.
+- `cargo +1.99.0 run -p autodarts-core --example announcement_replay`: passed with zero captured-startup submissions and three synthetic rounds per mode.
+- `bash scripts/verify.sh --quick`: passed with 28 core tests, 25 component tests, release Wasm build, replay, probe, and guidance equality.
+- The full alpha.2 chain and compiled pinned-host proof were not run in this checkout because `.cache/niles` is absent; no installed, live-device, routing, or audible claim is made.
 
 ## Proof and unresolved work
 

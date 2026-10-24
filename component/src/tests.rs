@@ -1,6 +1,6 @@
 use super::*;
 use bindings::niles::integration::types::DeviceState as WitDeviceState;
-use test_host::niles::integration::{config, devices, http, speech_stream, websocket};
+use test_host::niles::integration::{config, devices, http, speech_stream, ui, websocket};
 
 fn response(body: &str) -> Result<http::Response, http::HttpError> {
     Ok(http::Response {
@@ -23,6 +23,7 @@ fn setup(replies: impl IntoIterator<Item = Result<http::Response, http::HttpErro
     devices::reset();
     speech_stream::reset();
     websocket::reset();
+    ui::reset();
     config::set(
         "address",
         config::SettingValue::Text("board.local:3180".into()),
@@ -376,6 +377,86 @@ fn websocket_callback_drives_each_dart_and_total_after_clean_baseline() {
         speech_stream::calls().submitted,
         [(7, "20".into()), (7, "5".into()), (7, "25".into())]
     );
+}
+
+#[test]
+fn board_manager_1_0_7_capture_recovers_through_real_guest_callbacks() {
+    let capture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../crates/autodarts-core/tests/fixtures/board-manager-1.0.7-reduced-capture.json"
+    ))
+    .unwrap();
+
+    for (mode, expected) in [
+        (
+            "each_dart_then_total",
+            vec!["3", "7", "7", "17", "3", "7", "7", "17"],
+        ),
+        ("total_only", vec!["17", "17"]),
+    ] {
+        setup(initial(false));
+        enable_announcements(mode);
+        Plugin::init().unwrap();
+        websocket::status(
+            41,
+            bindings::niles::integration::websocket::ConnectionStatus::Connected,
+        );
+        for envelope in capture.as_array().unwrap() {
+            websocket::message(
+                41,
+                bindings::niles::integration::websocket::Message::Text(envelope.to_string()),
+            );
+        }
+        assert!(speech_stream::calls().submitted.is_empty());
+
+        for round in 0..2 {
+            for state in [
+                r#"{"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"number":3,"multiplier":1}}]}}"#,
+                r#"{"type":"state","data":{"running":true,"numThrows":2,"throws":[{"segment":{"number":3,"multiplier":1}},{"segment":{"number":7,"multiplier":1}}]}}"#,
+                r#"{"type":"state","data":{"running":true,"numThrows":3,"throws":[{"segment":{"number":3,"multiplier":1}},{"segment":{"number":7,"multiplier":1}},{"segment":{"number":7,"multiplier":1}}]}}"#,
+            ] {
+                websocket::message(
+                    41,
+                    bindings::niles::integration::websocket::Message::Text(state.into()),
+                );
+            }
+            websocket::message(
+                41,
+                bindings::niles::integration::websocket::Message::Text(
+                    if round == 0 {
+                        r#"{"type":"motion_state","data":{"isTakeoutPartial":true}}"#
+                    } else {
+                        r#"{"type":"motion_state","data":{"isTakeoutFull":true}}"#
+                    }
+                    .into(),
+                ),
+            );
+            websocket::message(
+                41,
+                bindings::niles::integration::websocket::Message::Text(
+                    r#"{"type":"state","data":{"running":true,"numThrows":0}}"#.into(),
+                ),
+            );
+        }
+
+        let calls = speech_stream::calls();
+        assert_eq!(
+            calls
+                .submitted
+                .iter()
+                .map(|(_, text)| text.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            calls
+                .submitted_ids
+                .iter()
+                .map(|(_, request, _)| *request)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            calls.submitted_ids.len()
+        );
+    }
 }
 
 #[test]
@@ -917,6 +998,108 @@ fn speech_enablement_without_announcement_intent_does_not_open_a_session() {
     assert!(speech_stream::calls().opened_rooms.is_empty());
 }
 
+#[test]
+fn rendered_diagnostics_follow_guest_ingress_and_invalidate_immediately() {
+    setup(initial(false));
+    enable_announcements("each_dart_then_total");
+    Plugin::init().unwrap();
+    websocket::status(
+        41,
+        bindings::niles::integration::websocket::ConnectionStatus::Connected,
+    );
+    let lines = render_text();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Announcement readiness: awaiting clean baseline")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Board event stream connected")
+    );
+    let before = ui::invalidations().len();
+
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text(
+            r#"{"type":"camera_status","data":{"connected":true}}"#.into(),
+        ),
+    );
+    let lines = render_text();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Latest event: ignored unrelated topic")
+    );
+    assert!(ui::invalidations().len() > before);
+
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text(
+            r#"{"type":"state","data":{"running":true,"numThrows":0}}"#.into(),
+        ),
+    );
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line == "Announcement readiness: collecting (0 validated darts)")
+    );
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text(ONE_DART.into()),
+    );
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line == "Announcement readiness: collecting (1 validated darts)")
+    );
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text(EMPTY_EVENT.into()),
+    );
+    assert!(
+        render_text().iter().any(
+            |line| line == "Announcement readiness: awaiting explicit removal (1 cached darts)"
+        )
+    );
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text(REMOVED.into()),
+    );
+    let lines = render_text();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Latest event: collection completed")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("Latest submission: Accepted request"))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Speech pending requests: 2")
+    );
+
+    websocket::message(
+        41,
+        bindings::niles::integration::websocket::Message::Text("{bad".into()),
+    );
+    let lines = render_text();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Latest event: invalid input")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line == "Announcement readiness: awaiting clean baseline")
+    );
+}
 fn render_text() -> Vec<String> {
     let tree = Plugin::render(
         "board".into(),

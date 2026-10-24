@@ -155,6 +155,9 @@ pub mod niles {
         pub mod ui {
             use std::cell::RefCell;
             thread_local! { static INVALIDATIONS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) }; }
+            pub fn reset() {
+                INVALIDATIONS.with(|slot| slot.borrow_mut().clear());
+            }
             pub fn invalidate(surface: &str) {
                 INVALIDATIONS.with(|slot| slot.borrow_mut().push(surface.into()));
             }
