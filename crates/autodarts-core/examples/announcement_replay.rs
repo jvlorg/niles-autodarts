@@ -34,9 +34,14 @@ fn replay_mode(mode: AnnouncementMode) -> RecordingDelivery {
     let (mode_name, mut session) = replay_session(mode);
     let mut delivery = RecordingDelivery::default();
     for collection in 1..=3 {
+        let baseline = run(&mut session, &mut delivery, BASELINE);
+        assert!(matches!(
+            baseline,
+            JourneyResult::Baseline | JourneyResult::Suppressed
+        ));
         assert_eq!(
-            run(&mut session, &mut delivery, BASELINE),
-            JourneyResult::Baseline
+            session.diagnostics().readiness,
+            autodarts_core::AnnouncementReadiness::Collecting { dart_count: 0 }
         );
         assert_eq!(
             run(&mut session, &mut delivery, DART_ONE),

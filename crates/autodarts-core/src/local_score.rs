@@ -521,8 +521,11 @@ impl LocalJourney {
         {
             return JourneyResult::Suppressed;
         }
-        let total_only_cleared_candidate =
-            mode == AnnouncementMode::TotalOnly && self.phase == Some(Phase::AwaitingClear);
+        let clear_before_marker = self
+            .previous
+            .as_ref()
+            .and_then(|state| state.throws.as_ref())
+            .is_some_and(Vec::is_empty);
         self.darts = candidate.clone();
         let total: u16 = candidate.iter().map(|v| u16::from(*v)).sum();
         let key = self.key("total", candidate_len);
@@ -533,11 +536,17 @@ impl LocalJourney {
         match deliver(delivery, room, &total.to_string(), key) {
             Ok(()) => {
                 self.serial = self.serial.saturating_add(1);
-                self.phase = Some(if total_only_cleared_candidate {
-                    Phase::AwaitingBaseline
+                if clear_before_marker {
+                    self.phase = Some(Phase::Collecting);
+                    self.darts.clear();
+                    self.announced = 0;
+                    self.tainted = false;
+                    self.removal_seen = false;
+                    self.removal_candidate = None;
+                    self.in_flight.clear();
                 } else {
-                    Phase::AwaitingClear
-                });
+                    self.phase = Some(Phase::AwaitingClear);
+                }
                 JourneyResult::Total(Some(total))
             }
             Err(e) => {
@@ -708,6 +717,47 @@ mod tests {
         );
         ingest(&mut j, state(&[]), &mut d);
         assert_eq!(ingest(&mut j, full(), &mut d), JourneyResult::Suppressed);
+    }
+    #[test]
+    fn clear_before_marker_starts_next_collection_without_second_clear() {
+        for mode in [
+            AnnouncementMode::EachDartThenTotal,
+            AnnouncementMode::TotalOnly,
+        ] {
+            let mut j = LocalJourney::default();
+            let mut d = RecordingDelivery::default();
+            j.ingest(true, mode, ROOM, empty(), &mut d);
+            j.ingest(true, mode, ROOM, state(&[20]), &mut d);
+            j.ingest(true, mode, ROOM, empty(), &mut d);
+            assert_eq!(
+                j.diagnostics().readiness,
+                AnnouncementReadiness::AwaitingRemoval
+            );
+            assert_eq!(
+                j.ingest(true, mode, ROOM, partial(), &mut d),
+                JourneyResult::Total(Some(20))
+            );
+            assert_eq!(
+                j.diagnostics().readiness,
+                AnnouncementReadiness::Collecting { dart_count: 0 }
+            );
+            j.ingest(true, mode, ROOM, state(&[7]), &mut d);
+            assert_eq!(
+                j.ingest(true, mode, ROOM, full(), &mut d),
+                JourneyResult::Total(Some(7))
+            );
+            assert_eq!(
+                d.requests
+                    .iter()
+                    .map(|request| request.text.as_str())
+                    .collect::<Vec<_>>(),
+                if mode == AnnouncementMode::EachDartThenTotal {
+                    vec!["20", "20", "7", "7"]
+                } else {
+                    vec!["20", "7"]
+                }
+            );
+        }
     }
 
     #[test]

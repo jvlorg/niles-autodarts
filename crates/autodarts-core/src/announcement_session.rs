@@ -23,10 +23,9 @@ impl AnnouncementSession {
     }
     pub fn diagnostics(&self) -> AnnouncementDiagnostics {
         let mut diagnostics = self.journey.diagnostics();
-        if self.settings.enabled
-            && self.settings.mode.is_some()
-            && diagnostics.readiness == AnnouncementReadiness::Disabled
-        {
+        if !self.settings.enabled || self.settings.mode.is_none() {
+            diagnostics.readiness = AnnouncementReadiness::Disabled;
+        } else if diagnostics.readiness == AnnouncementReadiness::Disabled {
             diagnostics.readiness = AnnouncementReadiness::AwaitingBaseline;
         }
         diagnostics
@@ -162,6 +161,20 @@ mod tests {
         );
         assert!(delivery.requests.is_empty());
         assert_eq!(session.settings().mode, Some(AnnouncementMode::TotalOnly));
+    }
+    #[test]
+    fn disabling_settings_reports_disabled_readiness_after_prior_ingress() {
+        let mut session = AnnouncementSession::new(settings(true, "total_only", "living_room"));
+        let mut delivery = RecordingDelivery::default();
+        session.ingest_json(EMPTY.as_bytes(), &mut delivery);
+        session.reconfigure(AnnouncementSettings::new(false, None, "living_room").unwrap());
+        assert_eq!(
+            session.diagnostics(),
+            AnnouncementDiagnostics {
+                readiness: AnnouncementReadiness::Disabled,
+                last_event: None,
+            }
+        );
     }
 
     #[test]
