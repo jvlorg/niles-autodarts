@@ -536,8 +536,7 @@ fn fixture_frames(capture: bool) -> Vec<&'static str> {
         .lines()
         .filter_map(|line| {
             let line = line.trim();
-            line.strip_prefix('{')
-                .map(|_| line.trim_end_matches(','))
+            line.strip_prefix('{').map(|_| line.trim_end_matches(','))
         })
         .collect()
 }
