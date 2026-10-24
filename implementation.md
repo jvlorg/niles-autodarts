@@ -29,6 +29,7 @@ No live device write, installation, release publication, LLM call, or live voice
 
 - `component/src/lib.rs`: commentary opening now requires a validated current `running` observation. Stopped, Starting, unavailable/disconnected, reconnect, overflow, stop, reconfiguration, and stale lifecycle paths clear authorization and reuse the existing invalidation/close helpers. Board observation remains connected; no automatic detection start was added. Rendered diagnostics now separate observation connection, detection state, speech session state, settings, and core baseline readiness.
 - `component/src/tests.rs`: added `jvl16_` focused coverage for idempotent stopped-session closure, preserved observation connection/no wake command, Starting and stale-dart recovery, pending-total cancellation, old timer/callback suppression, and updated eager-open assumptions.
+- `component/tests/host_proof.rs`: compiled proof now supplies a validated running observation without establishing a score baseline, so startup/lifecycle proof remains compatible with observation-gated session opening and stale darts remain silent.
 - `docs/plan.md` and `README.md`: documented observation-gated session lifetime and offline evidence boundaries.
 
 ### Executed checks
@@ -41,7 +42,7 @@ No live device write, installation, release publication, LLM call, or live voice
 - `bash scripts/verify.sh --quick` — passed.
 - `cargo fmt --all` — completed.
 
-The maintained full chain, pinned-host lifecycle proof, and final exact-head evidence remain final-gate checks and are not claimed here until executed on the committed candidate.
+The final maintained `bash scripts/verify.sh` passed on the committed candidate after the host-proof lifecycle update. It prepared Niles `4f3c0a10b2accd022354a23b9f961b222c27eb56`, compared the exact WIT, passed package checks, exact-asset diagnostics, the loopback compiled host proof on port 3180, checksums, and actionlint. Full output is preserved in `.harness/artifacts/verify-full-final.log`; exit status is `.harness/artifacts/verify-full-final.exit`.
 
 ### Remaining limitations
 
