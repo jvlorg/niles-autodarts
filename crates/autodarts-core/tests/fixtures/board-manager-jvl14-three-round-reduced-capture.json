@@ -1,42 +1,573 @@
 [
-  {"type":"state","data":{"connected":true,"running":true,"status":"Starting","event":"Starting","numThrows":0}},
-  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Started","event":"Started","numThrows":0,"throws":[]}},
-  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Throw","event":"Throw detected","numThrows":1,"throws":[{"segment":{"name":"T20","number":20,"bed":"Triple","multiplier":3}}]}},
-  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Throw","event":"Throw detected","numThrows":2,"throws":[{"segment":{"name":"T20","number":20,"bed":"Triple","multiplier":3}},{"segment":{"name":"S20","number":20,"bed":"Single","multiplier":1}}]}},
-  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Takeout","event":"Throw detected","numThrows":3,"throws":[{"segment":{"name":"T20","number":20,"bed":"Triple","multiplier":3}},{"segment":{"name":"S20","number":20,"bed":"Single","multiplier":1}},{"segment":{"name":"S7","number":7,"bed":"Single","multiplier":1}}]}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Takeout in progress","event":"Takeout started","numThrows":3,"throws":[{"segment":{"name":"T20","number":20,"bed":"Triple","multiplier":3}},{"segment":{"name":"S20","number":20,"bed":"Single","multiplier":1}},{"segment":{"name":"S7","number":7,"bed":"Single","multiplier":1}}]}},
-  {"type":"motion_state","data":{"isTakeoutPartial":true,"isTakeoutFull":true}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Throw","event":"Takeout finished","numThrows":0}},
-  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Throw","event":"Throw detected","numThrows":1,"throws":[{"segment":{"name":"T20","number":20,"bed":"Triple","multiplier":2}}]}},
-  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Throw","event":"Throw detected","numThrows":2,"throws":[{"segment":{"name":"T20","number":20,"bed":"Triple","multiplier":2}},{"segment":{"name":"S20","number":20,"bed":"Single","multiplier":1}}]}},
-  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Takeout","event":"Throw detected","numThrows":3,"throws":[{"segment":{"name":"T20","number":20,"bed":"Triple","multiplier":2}},{"segment":{"name":"S20","number":20,"bed":"Single","multiplier":1}},{"segment":{"name":"M19","number":19,"bed":"Outside","multiplier":0}}]}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Takeout in progress","event":"Takeout started","numThrows":3,"throws":[{"segment":{"name":"T20","number":20,"bed":"Triple","multiplier":2}},{"segment":{"name":"S20","number":20,"bed":"Single","multiplier":1}},{"segment":{"name":"M19","number":19,"bed":"Outside","multiplier":0}}]}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Throw","event":"Takeout finished","numThrows":0}},
-  {"type":"motion_state","data":{"isTakeoutPartial":true,"isTakeoutFull":false}},
-  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Started","event":"Started","numThrows":0,"throws":[]}},
-  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Throw","event":"Throw detected","numThrows":1,"throws":[{"segment":{"name":"D6","number":6,"bed":"Double","multiplier":2}}]}},
-  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Throw","event":"Throw detected","numThrows":2,"throws":[{"segment":{"name":"D6","number":6,"bed":"Double","multiplier":2}},{"segment":{"name":"S18","number":18,"bed":"Single","multiplier":1}}]}},
-  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Takeout","event":"Throw detected","numThrows":3,"throws":[{"segment":{"name":"D6","number":6,"bed":"Double","multiplier":2}},{"segment":{"name":"S18","number":18,"bed":"Single","multiplier":1}},{"segment":{"name":"M20","number":20,"bed":"Outside","multiplier":0}}]}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Takeout in progress","event":"Takeout started","numThrows":3,"throws":[{"segment":{"name":"D6","number":6,"bed":"Double","multiplier":2}},{"segment":{"name":"S18","number":18,"bed":"Single","multiplier":1}},{"segment":{"name":"M20","number":20,"bed":"Outside","multiplier":0}}]}},
-  {"type":"motion_state","data":{"isTakeoutPartial":true,"isTakeoutFull":false}},
-  {"type":"motion_state","data":{"isTakeoutPartial":true,"isTakeoutFull":true}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Throw","event":"Takeout finished","numThrows":0}},
-  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
-  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Started","event":"Started","numThrows":0,"throws":[]}},
-  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
-  {"type":"state","data":{"connected":true,"running":true,"status":"Throw","event":"Throw detected","numThrows":0,"throws":[]}},
-  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}},
-  {"type":"motion_state","data":{"isTakeoutPartial":false,"isTakeoutFull":false}}
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": false,
+      "status": "Starting",
+      "event": "Starting",
+      "numThrows": 0
+    }
+  },
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": true,
+      "status": "Throw",
+      "event": "Started",
+      "numThrows": 0
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": false,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": true,
+      "status": "Throw",
+      "event": "Throw detected",
+      "numThrows": 1,
+      "throws": [
+        {
+          "segment": {
+            "name": "T20",
+            "number": 20,
+            "bed": "Triple",
+            "multiplier": 3
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": false,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": true,
+      "status": "Throw",
+      "event": "Throw detected",
+      "numThrows": 2,
+      "throws": [
+        {
+          "segment": {
+            "name": "T20",
+            "number": 20,
+            "bed": "Triple",
+            "multiplier": 3
+          }
+        },
+        {
+          "segment": {
+            "name": "S20",
+            "number": 20,
+            "bed": "SingleInner",
+            "multiplier": 1
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": false,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": true,
+      "status": "Takeout",
+      "event": "Throw detected",
+      "numThrows": 3,
+      "throws": [
+        {
+          "segment": {
+            "name": "T20",
+            "number": 20,
+            "bed": "Triple",
+            "multiplier": 3
+          }
+        },
+        {
+          "segment": {
+            "name": "S20",
+            "number": 20,
+            "bed": "SingleInner",
+            "multiplier": 1
+          }
+        },
+        {
+          "segment": {
+            "name": "S7",
+            "number": 7,
+            "bed": "SingleOuter",
+            "multiplier": 1
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": false,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": true,
+      "status": "Takeout in progress",
+      "event": "Takeout started",
+      "numThrows": 3,
+      "throws": [
+        {
+          "segment": {
+            "name": "T20",
+            "number": 20,
+            "bed": "Triple",
+            "multiplier": 3
+          }
+        },
+        {
+          "segment": {
+            "name": "S20",
+            "number": 20,
+            "bed": "SingleInner",
+            "multiplier": 1
+          }
+        },
+        {
+          "segment": {
+            "name": "S7",
+            "number": 7,
+            "bed": "SingleOuter",
+            "multiplier": 1
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": false,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": true,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": true,
+      "status": "Throw",
+      "event": "Takeout finished",
+      "numThrows": 0
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": true,
+      "isTakeoutFull": true
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": false,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": true,
+      "status": "Throw",
+      "event": "Throw detected",
+      "numThrows": 1,
+      "throws": [
+        {
+          "segment": {
+            "name": "D20",
+            "number": 20,
+            "bed": "Double",
+            "multiplier": 2
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": false,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": true,
+      "status": "Throw",
+      "event": "Throw detected",
+      "numThrows": 2,
+      "throws": [
+        {
+          "segment": {
+            "name": "D20",
+            "number": 20,
+            "bed": "Double",
+            "multiplier": 2
+          }
+        },
+        {
+          "segment": {
+            "name": "S20",
+            "number": 20,
+            "bed": "SingleInner",
+            "multiplier": 1
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": false,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": true,
+      "status": "Takeout",
+      "event": "Throw detected",
+      "numThrows": 3,
+      "throws": [
+        {
+          "segment": {
+            "name": "D20",
+            "number": 20,
+            "bed": "Double",
+            "multiplier": 2
+          }
+        },
+        {
+          "segment": {
+            "name": "S20",
+            "number": 20,
+            "bed": "SingleInner",
+            "multiplier": 1
+          }
+        },
+        {
+          "segment": {
+            "name": "M19",
+            "number": 19,
+            "bed": "Outside",
+            "multiplier": 0
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": false,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": true,
+      "status": "Takeout in progress",
+      "event": "Takeout started",
+      "numThrows": 3,
+      "throws": [
+        {
+          "segment": {
+            "name": "D20",
+            "number": 20,
+            "bed": "Double",
+            "multiplier": 2
+          }
+        },
+        {
+          "segment": {
+            "name": "S20",
+            "number": 20,
+            "bed": "SingleInner",
+            "multiplier": 1
+          }
+        },
+        {
+          "segment": {
+            "name": "M19",
+            "number": 19,
+            "bed": "Outside",
+            "multiplier": 0
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": false,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": true,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": true,
+      "isTakeoutFull": true
+    }
+  },
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": true,
+      "status": "Throw",
+      "event": "Takeout finished",
+      "numThrows": 0
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": true,
+      "isTakeoutFull": true
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": false,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": true,
+      "status": "Throw",
+      "event": "Throw detected",
+      "numThrows": 1,
+      "throws": [
+        {
+          "segment": {
+            "name": "S12",
+            "number": 12,
+            "bed": "SingleInner",
+            "multiplier": 1
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": false,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": true,
+      "status": "Throw",
+      "event": "Throw detected",
+      "numThrows": 2,
+      "throws": [
+        {
+          "segment": {
+            "name": "S12",
+            "number": 12,
+            "bed": "SingleInner",
+            "multiplier": 1
+          }
+        },
+        {
+          "segment": {
+            "name": "S18",
+            "number": 18,
+            "bed": "SingleOuter",
+            "multiplier": 1
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": false,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": true,
+      "status": "Takeout",
+      "event": "Throw detected",
+      "numThrows": 3,
+      "throws": [
+        {
+          "segment": {
+            "name": "S12",
+            "number": 12,
+            "bed": "SingleInner",
+            "multiplier": 1
+          }
+        },
+        {
+          "segment": {
+            "name": "S18",
+            "number": 18,
+            "bed": "SingleOuter",
+            "multiplier": 1
+          }
+        },
+        {
+          "segment": {
+            "name": "M19",
+            "number": 19,
+            "bed": "Outside",
+            "multiplier": 0
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": false,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": true,
+      "status": "Takeout in progress",
+      "event": "Takeout started",
+      "numThrows": 3,
+      "throws": [
+        {
+          "segment": {
+            "name": "S12",
+            "number": 12,
+            "bed": "SingleInner",
+            "multiplier": 1
+          }
+        },
+        {
+          "segment": {
+            "name": "S18",
+            "number": 18,
+            "bed": "SingleOuter",
+            "multiplier": 1
+          }
+        },
+        {
+          "segment": {
+            "name": "M19",
+            "number": 19,
+            "bed": "Outside",
+            "multiplier": 0
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": false,
+      "isTakeoutFull": false
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": true,
+      "isTakeoutFull": true
+    }
+  },
+  {
+    "type": "state",
+    "data": {
+      "connected": true,
+      "running": true,
+      "status": "Throw",
+      "event": "Takeout finished",
+      "numThrows": 0
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": true,
+      "isTakeoutFull": true
+    }
+  },
+  {
+    "type": "motion_state",
+    "data": {
+      "isTakeoutPartial": false,
+      "isTakeoutFull": false
+    }
+  }
 ]

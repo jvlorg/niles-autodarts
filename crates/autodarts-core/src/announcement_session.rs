@@ -981,4 +981,208 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn exact_jvl14_capture_matches_supplied_ordered_payload() {
+        fn motion(partial: bool, full: bool) -> serde_json::Value {
+            serde_json::json!({
+                "type": "motion_state",
+                "data": {
+                    "isTakeoutPartial": partial,
+                    "isTakeoutFull": full
+                }
+            })
+        }
+
+        fn segment(name: &str, number: u8, bed: &str, multiplier: u8) -> serde_json::Value {
+            serde_json::json!({
+                "segment": {
+                    "name": name,
+                    "number": number,
+                    "bed": bed,
+                    "multiplier": multiplier
+                }
+            })
+        }
+
+        fn throws(items: &[(&str, u8, &str, u8)]) -> Vec<serde_json::Value> {
+            items
+                .iter()
+                .map(|(name, number, bed, multiplier)| segment(name, *number, bed, *multiplier))
+                .collect()
+        }
+
+        fn state(
+            running: bool,
+            status: &str,
+            event: &str,
+            num_throws: u8,
+            throws: Option<Vec<serde_json::Value>>,
+        ) -> serde_json::Value {
+            let mut data = serde_json::json!({
+                "connected": true,
+                "running": running,
+                "status": status,
+                "event": event,
+                "numThrows": num_throws
+            });
+            if let Some(throws) = throws {
+                data["throws"] = serde_json::Value::Array(throws);
+            }
+            serde_json::json!({"type": "state", "data": data})
+        }
+
+        let capture: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../tests/fixtures/board-manager-jvl14-three-round-reduced-capture.json"
+        ))
+        .unwrap();
+        let expected = serde_json::json!([
+            state(false, "Starting", "Starting", 0, None),
+            state(true, "Throw", "Started", 0, None),
+            motion(false, false),
+            state(
+                true,
+                "Throw",
+                "Throw detected",
+                1,
+                Some(throws(&[("T20", 20, "Triple", 3)]))
+            ),
+            motion(false, false),
+            state(
+                true,
+                "Throw",
+                "Throw detected",
+                2,
+                Some(throws(&[
+                    ("T20", 20, "Triple", 3),
+                    ("S20", 20, "SingleInner", 1)
+                ]))
+            ),
+            motion(false, false),
+            state(
+                true,
+                "Takeout",
+                "Throw detected",
+                3,
+                Some(throws(&[
+                    ("T20", 20, "Triple", 3),
+                    ("S20", 20, "SingleInner", 1),
+                    ("S7", 7, "SingleOuter", 1)
+                ]))
+            ),
+            motion(false, false),
+            state(
+                true,
+                "Takeout in progress",
+                "Takeout started",
+                3,
+                Some(throws(&[
+                    ("T20", 20, "Triple", 3),
+                    ("S20", 20, "SingleInner", 1),
+                    ("S7", 7, "SingleOuter", 1)
+                ]))
+            ),
+            motion(false, false),
+            motion(true, false),
+            state(true, "Throw", "Takeout finished", 0, None),
+            motion(true, true),
+            motion(false, false),
+            state(
+                true,
+                "Throw",
+                "Throw detected",
+                1,
+                Some(throws(&[("D20", 20, "Double", 2)]))
+            ),
+            motion(false, false),
+            state(
+                true,
+                "Throw",
+                "Throw detected",
+                2,
+                Some(throws(&[
+                    ("D20", 20, "Double", 2),
+                    ("S20", 20, "SingleInner", 1)
+                ]))
+            ),
+            motion(false, false),
+            state(
+                true,
+                "Takeout",
+                "Throw detected",
+                3,
+                Some(throws(&[
+                    ("D20", 20, "Double", 2),
+                    ("S20", 20, "SingleInner", 1),
+                    ("M19", 19, "Outside", 0)
+                ]))
+            ),
+            motion(false, false),
+            state(
+                true,
+                "Takeout in progress",
+                "Takeout started",
+                3,
+                Some(throws(&[
+                    ("D20", 20, "Double", 2),
+                    ("S20", 20, "SingleInner", 1),
+                    ("M19", 19, "Outside", 0)
+                ]))
+            ),
+            motion(false, false),
+            motion(true, false),
+            motion(true, true),
+            state(true, "Throw", "Takeout finished", 0, None),
+            motion(true, true),
+            motion(false, false),
+            state(
+                true,
+                "Throw",
+                "Throw detected",
+                1,
+                Some(throws(&[("S12", 12, "SingleInner", 1)]))
+            ),
+            motion(false, false),
+            state(
+                true,
+                "Throw",
+                "Throw detected",
+                2,
+                Some(throws(&[
+                    ("S12", 12, "SingleInner", 1),
+                    ("S18", 18, "SingleOuter", 1)
+                ]))
+            ),
+            motion(false, false),
+            state(
+                true,
+                "Takeout",
+                "Throw detected",
+                3,
+                Some(throws(&[
+                    ("S12", 12, "SingleInner", 1),
+                    ("S18", 18, "SingleOuter", 1),
+                    ("M19", 19, "Outside", 0)
+                ]))
+            ),
+            motion(false, false),
+            state(
+                true,
+                "Takeout in progress",
+                "Takeout started",
+                3,
+                Some(throws(&[
+                    ("S12", 12, "SingleInner", 1),
+                    ("S18", 18, "SingleOuter", 1),
+                    ("M19", 19, "Outside", 0)
+                ]))
+            ),
+            motion(false, false),
+            motion(true, true),
+            state(true, "Throw", "Takeout finished", 0, None),
+            motion(true, true),
+            motion(false, false)
+        ]);
+        assert_eq!(capture, expected);
+        assert_eq!(capture.as_array().unwrap().len(), 40);
+    }
 }

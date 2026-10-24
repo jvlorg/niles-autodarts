@@ -1132,7 +1132,7 @@ fn deadline_timer_failure_discards_speech_generation() {
 }
 
 #[test]
-fn callback_ingress_replays_projection_fifo_and_deadline_timer() {
+fn callback_ingress_replays_exact_capture_fifo_and_deadline_timer() {
     let capture: serde_json::Value = serde_json::from_slice(include_bytes!(
         "../../crates/autodarts-core/tests/fixtures/board-manager-jvl14-three-round-reduced-capture.json"
     ))

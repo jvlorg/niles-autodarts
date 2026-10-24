@@ -1025,13 +1025,13 @@ async fn compiled_component_uses_real_niles_speech_scheduler() {
         &[
             "60", "20", "7", "87", "40", "20", "0", "60", "12", "18", "0", "30",
         ],
-        "jvl14-fixture-projection/each-dart-then-total",
+        "jvl14-exact-reduced-capture/each-dart-then-total",
     )
     .await;
     captured_replay(
         "total_only",
         &["87", "60", "30"],
-        "jvl14-fixture-projection/total-only",
+        "jvl14-exact-reduced-capture/total-only",
     )
     .await;
 }

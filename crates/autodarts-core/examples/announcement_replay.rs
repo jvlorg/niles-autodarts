@@ -19,7 +19,7 @@ fn replay_fixture(mode: AnnouncementMode) -> RecordingDelivery {
     let capture: serde_json::Value = serde_json::from_slice(include_bytes!(
         "../tests/fixtures/board-manager-jvl14-three-round-reduced-capture.json"
     ))
-    .expect("valid JVL-14 fixture projection");
+    .expect("valid exact JVL-14 reduced capture");
     for envelope in capture.as_array().expect("capture array") {
         let json = serde_json::to_vec(envelope).expect("capture envelope");
         session.ingest_json(&json, &mut delivery);
@@ -195,7 +195,7 @@ fn main() {
         }
     }
 
-    println!("JVL-14 fixture projection: 87, 60, 30 totals in both modes");
+    println!("JVL-14 exact reduced capture: 87, 60, 30 totals in both modes");
     println!("JVL-13 reduced capture stays silent; separate synthetic continuation: 17, 17, 17");
     println!("Synthetic partial and deadline-first scenarios remain separately labelled");
     println!("These are policy submissions; they do not prove host transport or audibility.");
