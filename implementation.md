@@ -42,7 +42,7 @@ No live device write, installation, release publication, LLM call, or live voice
 - `bash scripts/verify.sh --quick` — passed.
 - `cargo fmt --all` — completed.
 
-The final maintained `bash scripts/verify.sh` passed on the committed candidate after the host-proof lifecycle update. It prepared Niles `4f3c0a10b2accd022354a23b9f961b222c27eb56`, compared the exact WIT, passed package checks, exact-asset diagnostics, the loopback compiled host proof on port 3180, checksums, and actionlint. Full output is preserved in `.harness/artifacts/verify-full-final.log`; exit status is `.harness/artifacts/verify-full-final.exit`.
+The final maintained `bash scripts/verify.sh` passed on the committed candidate after the host-proof lifecycle update. It prepared Niles `4f3c0a10b2accd022354a23b9f961b222c27eb56`, compared the exact WIT, passed package checks, exact-asset diagnostics, the loopback compiled host proof on port 3180, checksums, and actionlint. Full exact-head output is preserved in `.harness/artifacts/verify-full-exact-head.log`; exit status is `.harness/artifacts/verify-full-exact-head.exit`.
 
 ### Remaining limitations
 
