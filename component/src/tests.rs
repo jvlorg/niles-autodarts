@@ -563,64 +563,78 @@ fn unavailable_detection_readback_keeps_polling_until_recovery() {
 #[test]
 fn ambiguous_connection_reports_unknown_outcome_for_start_and_stop() {
     for (initial_on, desired_on, action) in [(false, true, "start"), (true, false, "stop")] {
-        setup(initial(initial_on));
-        Plugin::init().unwrap();
-        http::fail_next(http::HttpError::Connection(
-            "opaque transport detail".into(),
-        ));
-        let result = Plugin::set_device("living_room/dartboard".into(), desired(Some(desired_on)));
-        assert_eq!(
-            result.unwrap_err(),
-            "Detection command outcome unknown: command_connection"
-        );
-        assert_eq!(
-            devices::calls().upserts.last().unwrap().state.on,
-            Some(initial_on)
-        );
-        let lines = render_text();
-        assert!(lines.iter().any(|line| line
-            == &format!("Detection command: {action} outcome unknown: command_connection")));
-        assert!(!lines.iter().any(|line| line.contains("rejected")));
-        assert!(
-            lines
-                .iter()
-                .any(|line| line == "Detection readback: command_connection")
-        );
-        assert_eq!(
-            http::requests()
-                .iter()
-                .filter(|request| request.method == http::Method::Put)
-                .count(),
-            1
-        );
+        for detail in [
+            "connect refused before sending",
+            "response interrupted after sending",
+        ] {
+            setup(initial(initial_on));
+            Plugin::init().unwrap();
+            http::fail_next(http::HttpError::Connection(detail.into()));
+            let error =
+                Plugin::set_device("living_room/dartboard".into(), desired(Some(desired_on)))
+                    .unwrap_err();
+            assert!(error.contains("command_connection") && error.contains("unknown"));
+            assert!(!error.contains("rejected"));
+            assert_eq!(
+                devices::calls().upserts.last().unwrap().state.on,
+                Some(initial_on)
+            );
+            let lines = render_text();
+            assert!(lines.iter().any(|line| line.contains(action)
+                && line.contains("unknown")
+                && line.contains("command_connection")));
+            assert!(
+                !lines
+                    .iter()
+                    .any(|line| line.contains("rejected") || line.contains(detail))
+            );
+
+            test_host::clock::advance(Duration::from_secs(31));
+            http::append_replies(initial(initial_on));
+            Plugin::on_timer("poll".into());
+            for (timer, _) in test_host::niles::integration::timers::after_calls() {
+                Plugin::on_timer(timer);
+            }
+            assert_eq!(
+                http::requests()
+                    .iter()
+                    .filter(|request| request.method == http::Method::Put)
+                    .count(),
+                1,
+                "connection ambiguity must not cause an automatic retry"
+            );
+            assert_eq!(
+                devices::calls().upserts.last().unwrap().state.on,
+                Some(initial_on)
+            );
+        }
     }
 }
 
 #[test]
 fn complete_http_rejection_remains_a_rejection_error() {
-    setup(initial(false));
-    Plugin::init().unwrap();
-    http::set_replies([Ok(http::Response {
-        status: 503,
-        headers: vec![],
-        body: vec![],
-    })]);
-    let result = Plugin::set_device("living_room/dartboard".into(), desired(Some(true)));
-    assert_eq!(
-        result.unwrap_err(),
-        "Detection command failed: command_http_status"
-    );
-    assert_eq!(
-        devices::calls().upserts.last().unwrap().state.on,
-        Some(false)
-    );
-    let lines = render_text();
-    assert!(
-        lines
-            .iter()
-            .any(|line| line == "Detection command: start rejected: command_http_status")
-    );
-    assert!(!lines.iter().any(|line| line.contains("outcome unknown")));
+    for (initial_on, action) in [(false, "start"), (true, "stop")] {
+        setup(initial(initial_on));
+        Plugin::init().unwrap();
+        http::set_replies([Ok(http::Response {
+            status: 503,
+            headers: vec![],
+            body: vec![],
+        })]);
+        let error = Plugin::set_device("living_room/dartboard".into(), desired(Some(!initial_on)))
+            .unwrap_err();
+        assert!(error.contains("command_http_status"));
+        assert!(!error.contains("unknown"));
+        assert_eq!(
+            devices::calls().upserts.last().unwrap().state.on,
+            Some(initial_on)
+        );
+        let lines = render_text();
+        assert!(lines.iter().any(|line| line.contains(action)
+            && line.contains("rejected")
+            && line.contains("command_http_status")));
+        assert!(!lines.iter().any(|line| line.contains("outcome unknown")));
+    }
 }
 
 #[test]
@@ -1788,6 +1802,36 @@ fn stopped_status_poll_cancels_before_draining_speech() {
         send_event(ONE_DART);
         assert_eq!(speech_stream::calls().submitted.len(), 2);
     }
+}
+
+#[test]
+fn stopped_detection_readback_cancels_before_draining_speech() {
+    setup(initial(true));
+    enable_announcements("each_dart_then_total");
+    Plugin::init().unwrap();
+    send_event(EMPTY_EVENT);
+    send_event(ONE_DART);
+    send_event(TWO_DARTS);
+    send_event(THREE_DARTS);
+    let deadline = latest_timer("total-deadline:");
+    let calls = speech_stream::calls();
+
+    test_host::clock::advance(Duration::from_secs(16));
+    http::set_replies([response("")]);
+    Plugin::set_device("living_room/dartboard".into(), desired(Some(true))).unwrap();
+    http::append_replies([response(r#"{"connected":true,"running":false}"#)]);
+    Plugin::on_timer(latest_timer("detection-poll:"));
+    set_terminal(calls.submitted_ids[0].1);
+    poll_speech();
+    Plugin::on_timer(deadline);
+    assert_eq!(speech_stream::calls().submitted.len(), 1);
+    assert_eq!(speech_stream::calls().closed, [calls.submitted[0].0]);
+
+    send_event(ONE_DART);
+    assert_eq!(speech_stream::calls().submitted.len(), 1);
+    send_event(EMPTY_EVENT);
+    send_event(ONE_DART);
+    assert_eq!(speech_stream::calls().submitted.len(), 2);
 }
 
 #[test]

@@ -341,7 +341,7 @@ struct Board {
     connections: mpsc::UnboundedReceiver<Socket>,
     acknowledge_start: Arc<AtomicBool>,
     incomplete_start: Arc<AtomicBool>,
-    close_connections: Arc<AtomicBool>,
+    finish_start: Arc<Semaphore>,
     starts: Arc<AtomicUsize>,
 }
 
@@ -357,8 +357,8 @@ impl Board {
         let board_acknowledge = Arc::clone(&acknowledge_start);
         let incomplete_start = Arc::new(AtomicBool::new(false));
         let board_incomplete = Arc::clone(&incomplete_start);
-        let close_connections = Arc::new(AtomicBool::new(false));
-        let board_close_connections = Arc::clone(&close_connections);
+        let finish_start = Arc::new(Semaphore::new(0));
+        let board_finish_start = Arc::clone(&finish_start);
         let starts = Arc::new(AtomicUsize::new(0));
         let board_starts = Arc::clone(&starts);
         let task = tokio::spawn(async move {
@@ -371,13 +371,9 @@ impl Board {
                         let connections = connections.clone();
                         let acknowledge = Arc::clone(&board_acknowledge);
                         let incomplete = Arc::clone(&board_incomplete);
-                        let close = Arc::clone(&board_close_connections);
+                        let finish_start = Arc::clone(&board_finish_start);
                         let starts = Arc::clone(&board_starts);
                         children.spawn(async move {
-                            if close.load(Ordering::SeqCst) {
-                                stream.shutdown().await.unwrap();
-                                return;
-                            }
                             let mut peek = [0u8; 1024];
                             let count = tokio::time::timeout(WAIT, async {
                                 loop {
@@ -411,13 +407,10 @@ impl Board {
                                 if acknowledge.load(Ordering::SeqCst) {
                                     stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
                                     stream.shutdown().await.unwrap();
-                                    tokio::time::sleep(Duration::from_secs(3)).await;
-                                    board_running.store(true, Ordering::SeqCst);
-                                    return;
                                 }
-                                tokio::time::sleep(Duration::from_secs(3)).await;
+                                finish_start.acquire().await.unwrap().forget();
                                 board_running.store(true, Ordering::SeqCst);
-                                ("204 No Content", String::new())
+                                return;
                             } else if peek[..count].starts_with(b"PUT /api/stop ") {
                                 ("503 Service Unavailable", String::new())
                             } else if peek[..count].starts_with(b"GET /api/version ") {
@@ -449,7 +442,7 @@ impl Board {
             connections: rx,
             acknowledge_start,
             incomplete_start,
-            close_connections,
+            finish_start,
             starts,
         }
     }
@@ -1053,7 +1046,7 @@ async fn active_transport_is_not_replaced() {
 }
 
 async fn compiled_connection_errors_remain_ambiguous() {
-    let (proof, mut socket) = Proof::start_with_initial("total_only", false).await;
+    let (mut proof, mut socket) = Proof::start_with_initial("total_only", false).await;
     let id = tokio::time::timeout(WAIT, async {
         loop {
             if let Some(device) = proof
@@ -1080,42 +1073,39 @@ async fn compiled_connection_errors_remain_ambiguous() {
         .execute(serde_json::json!({"device_id": id.to_string(), "on": true}))
         .await
         .expect_err("incomplete response must not become a successful command");
+    let incomplete_message = incomplete.to_string();
     assert!(
-        incomplete
-            .to_string()
-            .contains("Detection command outcome unknown: command_connection")
+        incomplete_message.contains("unknown") && incomplete_message.contains("command_connection")
     );
+    assert!(!incomplete_message.contains("rejected"));
+    assert_eq!(proof.registry.get(&id).unwrap().state.on, Some(false));
     assert_eq!(proof.board.starts.load(Ordering::SeqCst), 1);
 
-    proof.board.incomplete_start.store(false, Ordering::SeqCst);
-    proof.board.close_connections.store(true, Ordering::SeqCst);
+    proof.board.task.abort();
+    assert!((&mut proof.board.task).await.unwrap_err().is_cancelled());
+    let unavailable = TcpStream::connect("127.0.0.1:3180").await.unwrap_err();
+    assert_eq!(unavailable.kind(), std::io::ErrorKind::ConnectionRefused);
     let closed = tool
         .execute(serde_json::json!({"device_id": id.to_string(), "on": true}))
         .await
-        .expect_err("closed connection must not become a successful command");
-    assert!(
-        closed
-            .to_string()
-            .contains("Detection command outcome unknown: command_connection")
-    );
+        .expect_err("unreachable endpoint must not become a successful command");
+    let closed_message = closed.to_string();
+    assert!(closed_message.contains("unknown") && closed_message.contains("command_connection"));
+    assert!(!closed_message.contains("rejected"));
+    assert_eq!(proof.registry.get(&id).unwrap().state.on, Some(false));
     assert_eq!(
         proof.board.starts.load(Ordering::SeqCst),
         1,
-        "closed connection did not receive a start request"
+        "closed listener cannot receive another start request"
     );
 
     println!("compiled ambiguous command outcomes: incomplete={incomplete}; closed={closed}");
     socket.close(None).await.unwrap();
     let Proof {
-        runtime,
-        manager,
-        mut board,
-        ..
+        runtime, manager, ..
     } = proof;
     runtime.shutdown().await;
     manager.shutdown().await;
-    board.task.abort();
-    let _ = (&mut board.task).await;
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn compiled_component_uses_real_niles_speech_scheduler() {
@@ -1215,6 +1205,7 @@ async fn compiled_detection_command_outcome(acknowledge: bool) {
     let duplicate = tool.execute(start.clone()).await.unwrap();
     assert_eq!(duplicate, result);
     assert_eq!(proof.board.starts.load(Ordering::SeqCst), 1);
+    proof.board.finish_start.add_permits(1);
 
     tokio::time::timeout(Duration::from_secs(8), async {
         loop {
@@ -1238,12 +1229,10 @@ async fn compiled_detection_command_outcome(acknowledge: bool) {
 
     let rejection = tool
         .execute(serde_json::json!({"device_id": id.to_string(), "on": false}))
-        .await;
-    println!(
-        "detection rejection tool error: {}",
-        rejection.as_ref().unwrap_err()
-    );
-    assert!(rejection.is_err());
+        .await
+        .expect_err("complete non-2xx response remains rejection");
+    println!("detection rejection tool error: {rejection}");
+    assert!(rejection.to_string().contains("command_http_status"));
     assert_eq!(
         proof.registry.get(&id).expect("reported device").state.on,
         Some(true)

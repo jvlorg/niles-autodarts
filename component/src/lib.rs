@@ -553,6 +553,27 @@ fn apply_detection_snapshot(runtime: &mut Runtime, snapshot: Snapshot) -> Result
     report(runtime)
 }
 
+fn apply_detection_readback(runtime: &mut Runtime, snapshot: Snapshot) -> Result<(), String> {
+    apply_detection_snapshot(runtime, snapshot)?;
+    if observed_running(&runtime.snapshot) == Some(false)
+        && (runtime.speech_in_flight.is_some()
+            || runtime
+                .announcement_session
+                .pending_total_deadline()
+                .is_some()
+            || matches!(
+                runtime.announcement_session.diagnostics().readiness,
+                autodarts_core::AnnouncementReadiness::Collecting { .. }
+                    | autodarts_core::AnnouncementReadiness::AwaitingRemoval
+                    | autodarts_core::AnnouncementReadiness::AwaitingClear
+            ))
+    {
+        invalidate_speech(runtime, "observed detection stop");
+        reopen_speech(runtime);
+    }
+    Ok(())
+}
+
 fn on_detection_timer(runtime: &mut Runtime, id: &str) {
     let Some(operation) = runtime.detection.as_ref() else {
         return;
@@ -579,7 +600,7 @@ fn on_detection_timer(runtime: &mut Runtime, id: &str) {
         return;
     }
     let snapshot = poll_state(&runtime.config, &mut HostTransport);
-    let _ = apply_detection_snapshot(runtime, snapshot);
+    let _ = apply_detection_readback(runtime, snapshot);
     ui::invalidate("board");
 }
 
@@ -590,32 +611,7 @@ fn poll_now() -> Result<(), String> {
             .as_mut()
             .ok_or_else(|| "Autodarts is not configured.".to_string())?;
         let snapshot = poll(&runtime.config, &mut HostTransport);
-        apply_detection_snapshot(runtime, snapshot)?;
-        if matches!(
-            runtime.snapshot.state,
-            BoardState::Observed {
-                running: Some(false),
-                ..
-            } | BoardState::Observed {
-                connected: Some(false),
-                ..
-            }
-        ) && (runtime.speech_in_flight.is_some()
-            || runtime
-                .announcement_session
-                .pending_total_deadline()
-                .is_some()
-            || matches!(
-                runtime.announcement_session.diagnostics().readiness,
-                autodarts_core::AnnouncementReadiness::Collecting { .. }
-                    | autodarts_core::AnnouncementReadiness::AwaitingRemoval
-                    | autodarts_core::AnnouncementReadiness::AwaitingClear
-            ))
-        {
-            invalidate_speech(runtime, "observed detection stop");
-            reopen_speech(runtime);
-        }
-        Ok(())
+        apply_detection_readback(runtime, snapshot)
     })
 }
 fn begin_detection(runtime: &mut Runtime, desired: bool) -> Result<(), String> {
