@@ -137,55 +137,6 @@ pub enum HttpFailure {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DetectionCommand {
-    Start,
-    Stop,
-}
-
-pub trait CommandTransport: Transport {
-    fn put(&mut self, url: &Url, timeout_ms: u32) -> Result<u16, HttpFailure>;
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DetectionResult {
-    Confirmed(bool),
-    Pending {
-        desired: bool,
-        observed: Option<bool>,
-    },
-    Failed(&'static str),
-}
-
-/// Request a detection transition, then independently observe state once.
-/// A command response is only an acknowledgement, never observed state.
-pub fn set_detection<T: CommandTransport>(
-    config: &Config,
-    transport: &mut T,
-    command: DetectionCommand,
-) -> DetectionResult {
-    let desired = command == DetectionCommand::Start;
-    let endpoint = if desired { "api/start" } else { "api/stop" };
-    let url = config.endpoint(endpoint);
-    match transport.put(&url, config.timeout_ms) {
-        Ok(status) if (200..300).contains(&status) => {}
-        Ok(_) => return DetectionResult::Failed("command_http_status"),
-        Err(HttpFailure::Timeout) => return DetectionResult::Failed("command_timeout"),
-        Err(HttpFailure::Connection) => return DetectionResult::Failed("command_connection"),
-        Err(HttpFailure::TooLarge) => return DetectionResult::Failed("command_response_too_large"),
-    }
-    let snapshot = poll(config, transport);
-    let observed = match snapshot.state {
-        BoardState::Observed { running, .. } => running,
-        BoardState::Unknown => None,
-    };
-    if snapshot.availability == Availability::Available && observed == Some(desired) {
-        DetectionResult::Confirmed(desired)
-    } else {
-        DetectionResult::Pending { desired, observed }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnnouncementMode {
     EachDartThenTotal,
     TotalOnly,

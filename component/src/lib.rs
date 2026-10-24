@@ -1,6 +1,8 @@
 use autodarts_core::{
     Availability, BoardState, Config, HttpFailure, HttpResponse, Snapshot, Transport,
-    detection::{CommandTransport, DetectionCommand, DetectionResult, set_detection},
+    detection::{
+        CommandTransport, DetectionCommand, DetectionDispatch, dispatch_detection, poll_state,
+    },
     poll,
 };
 #[cfg(not(test))]
@@ -21,6 +23,7 @@ use bindings::niles::integration::{
 };
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
+use std::time::{Duration, Instant};
 #[cfg(test)]
 use test_host::niles::integration::speech_stream;
 #[cfg(test)]
@@ -46,13 +49,26 @@ struct Plugin;
 export!(Plugin);
 thread_local! { static RUNTIME: RefCell<Option<Runtime>> = const { RefCell::new(None) }; }
 thread_local! { static SPEECH_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+thread_local! { static DETECTION_GENERATION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+
+fn detection_now() -> Instant {
+    #[cfg(test)]
+    return test_host::clock::now();
+    #[cfg(not(test))]
+    Instant::now()
+}
 struct Runtime {
     announcements: autodarts_core::AnnouncementSettings,
     announcement_session: autodarts_core::AnnouncementSession,
     policy_event: Option<autodarts_core::AnnouncementEvent>,
     config: Config,
     snapshot: Snapshot,
+    observation_at: Option<Instant>,
     command_status: Option<String>,
+    detection: Option<DetectionOperation>,
+    detection_poll_timer: Option<String>,
+    detection_expiry_timer: Option<String>,
+    detection_readback: Option<String>,
     speech_session: Option<u32>,
     speech_reopen_pending: bool,
     speech_generation: u64,
@@ -67,6 +83,16 @@ struct Runtime {
     speech_progress_timer: Option<String>,
     websocket_id: Option<u32>,
     websocket_status: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct DetectionOperation {
+    token: u64,
+    desired: bool,
+    dispatch: DetectionDispatch,
+    started_at: Instant,
+    expired: bool,
+    fresh_definitive_observation: Option<bool>,
 }
 
 #[derive(Clone, Debug)]
@@ -89,6 +115,8 @@ struct SpeechCompletion {
 
 const MAX_PENDING_SPEECH: usize = 32;
 const MAX_SPEECH_HISTORY: usize = 32;
+const DETECTION_POLL_SECONDS: u32 = 1;
+const DETECTION_MONITOR_SECONDS: u32 = 30;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SpeechRequestKind {
@@ -229,7 +257,11 @@ fn readings(snapshot: &Snapshot) -> Vec<Reading> {
     }
     values
 }
-fn diagnostics_text(snapshot: &Snapshot, command_status: Option<&str>) -> Vec<String> {
+fn diagnostics_text(
+    snapshot: &Snapshot,
+    command_status: Option<&str>,
+    detection_readback: Option<&str>,
+) -> Vec<String> {
     let mut lines = vec![match snapshot.availability {
         Availability::Available => "Board Manager: reachable".into(),
         Availability::Unavailable => "Board Manager: unavailable".into(),
@@ -266,6 +298,9 @@ fn diagnostics_text(snapshot: &Snapshot, command_status: Option<&str>) -> Vec<St
     if let Some(status) = command_status {
         lines.push(format!("Detection command: {status}"));
     }
+    if let Some(readback) = detection_readback {
+        lines.push(format!("Detection readback: {readback}"));
+    }
     if let Some(error) = &snapshot.diagnostic {
         lines.push(format!(
             "Diagnostic: {} {}{}",
@@ -279,23 +314,249 @@ fn diagnostics_text(snapshot: &Snapshot, command_status: Option<&str>) -> Vec<St
     }
     lines
 }
-fn poll_now() -> Result<(), String> {
-    RUNTIME.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        let runtime = slot
-            .as_mut()
-            .ok_or_else(|| "Autodarts is not configured.".to_string())?;
-        runtime.snapshot = poll(&runtime.config, &mut HostTransport);
-        if matches!(
-            runtime.snapshot.state,
-            BoardState::Observed {
-                running: Some(false),
-                ..
-            } | BoardState::Observed {
-                connected: Some(false),
-                ..
+
+fn normalize_snapshot(snapshot: Snapshot) -> Snapshot {
+    if matches!(
+        &snapshot.state,
+        BoardState::Observed {
+            connected: Some(false),
+            ..
+        }
+    ) {
+        return Snapshot::unknown("state".into(), "disconnected".into(), None);
+    }
+    if is_starting(&snapshot) && observed_running(&snapshot) != Some(false) {
+        return Snapshot::unknown("state".into(), "contradictory_starting".into(), None);
+    }
+    snapshot
+}
+
+fn observed_running(snapshot: &Snapshot) -> Option<bool> {
+    match &snapshot.state {
+        BoardState::Observed { running, .. } => *running,
+        BoardState::Unknown => None,
+    }
+}
+
+fn is_starting(snapshot: &Snapshot) -> bool {
+    matches!(
+        &snapshot.state,
+        BoardState::Observed {
+            status: Some(status),
+            ..
+        } if status == "Starting"
+    ) || matches!(
+        &snapshot.state,
+        BoardState::Observed {
+            event: Some(event),
+            ..
+        } if event == "Starting"
+    )
+}
+
+fn confirms(snapshot: &Snapshot, desired: bool) -> bool {
+    if snapshot.availability != Availability::Available || is_starting(snapshot) {
+        return false;
+    }
+    match &snapshot.state {
+        BoardState::Observed {
+            connected: Some(false),
+            ..
+        } => false,
+        BoardState::Observed { running, .. } => running == &Some(desired),
+        BoardState::Unknown => false,
+    }
+}
+
+fn dispatch_status(dispatch: DetectionDispatch) -> String {
+    match dispatch {
+        DetectionDispatch::Acknowledged => "acknowledged".into(),
+        DetectionDispatch::Uncertain(reason) => format!("dispatch uncertain ({reason})"),
+    }
+}
+
+fn pending_status(operation: &DetectionOperation, snapshot: &Snapshot) -> String {
+    let action = if operation.desired { "start" } else { "stop" };
+    let dispatch = dispatch_status(operation.dispatch);
+    let state = if is_starting(snapshot) {
+        "Starting"
+    } else {
+        match observed_running(snapshot) {
+            Some(value) if value == operation.desired => "observed target state",
+            Some(true) => "still running",
+            Some(false) => "still stopped",
+            None => "awaiting observation",
+        }
+    };
+    let elapsed = detection_now()
+        .saturating_duration_since(operation.started_at)
+        .as_secs();
+    if operation.expired {
+        format!(
+            "{action} monitoring expired; not confirmed ({state}); {dispatch}; operation {} elapsed {elapsed}s",
+            operation.token
+        )
+    } else {
+        format!(
+            "{action} {dispatch}; {state}; operation {} elapsed {elapsed}s",
+            operation.token
+        )
+    }
+}
+
+fn cancel_detection_timers(runtime: &mut Runtime) {
+    if let Some(id) = runtime.detection_poll_timer.take() {
+        timers::cancel(&id);
+    }
+    if let Some(id) = runtime.detection_expiry_timer.take() {
+        timers::cancel(&id);
+    }
+}
+
+fn cancel_detection(runtime: &mut Runtime) {
+    cancel_detection_timers(runtime);
+    runtime.detection = None;
+}
+
+fn expire_detection(runtime: &mut Runtime) -> bool {
+    let Some(operation) = runtime.detection.as_mut() else {
+        return false;
+    };
+    if !operation.expired
+        && detection_now().saturating_duration_since(operation.started_at)
+            >= Duration::from_secs(u64::from(DETECTION_MONITOR_SECONDS))
+    {
+        operation.expired = true;
+        // A pre-expiry stopped sample cannot authorize a new attempt later.
+        operation.fresh_definitive_observation = None;
+        runtime.command_status = Some(pending_status(operation, &runtime.snapshot));
+        runtime.detection_readback = Some("monitoring window expired without confirmation".into());
+        cancel_detection_timers(runtime);
+    }
+    runtime
+        .detection
+        .as_ref()
+        .is_some_and(|operation| operation.expired)
+}
+
+fn schedule_detection(runtime: &mut Runtime) {
+    if expire_detection(runtime) {
+        return;
+    }
+    let Some(operation) = runtime.detection.as_ref() else {
+        return;
+    };
+    let token = operation.token;
+    let remaining = Duration::from_secs(u64::from(DETECTION_MONITOR_SECONDS))
+        .saturating_sub(detection_now().saturating_duration_since(operation.started_at));
+    let expiry_seconds = remaining.as_secs() as u32 + u32::from(remaining.subsec_nanos() != 0);
+    if runtime.detection_poll_timer.is_none() {
+        let id = format!("detection-poll:{token}");
+        match timers::after(&id, DETECTION_POLL_SECONDS) {
+            Ok(()) => runtime.detection_poll_timer = Some(id),
+            Err(_) => {
+                runtime.detection_readback = Some("poll timer registration failed".into());
+                runtime.command_status = Some(format!(
+                    "{}; monitoring unavailable",
+                    pending_status(runtime.detection.as_ref().unwrap(), &runtime.snapshot)
+                ));
             }
-        ) && (runtime.speech_in_flight.is_some()
+        }
+    }
+    if runtime.detection_expiry_timer.is_none() {
+        let id = format!("detection-expiry:{token}");
+        match timers::after(&id, expiry_seconds) {
+            Ok(()) => runtime.detection_expiry_timer = Some(id),
+            Err(_) => {
+                runtime.detection_readback =
+                    Some("monitoring expiry timer registration failed".into());
+                runtime.command_status = Some(format!(
+                    "{}; monitoring unavailable",
+                    pending_status(runtime.detection.as_ref().unwrap(), &runtime.snapshot)
+                ));
+            }
+        }
+    }
+}
+
+fn finish_detection(runtime: &mut Runtime, desired: bool) {
+    cancel_detection(runtime);
+    runtime.command_status = Some(if desired {
+        "running confirmed".into()
+    } else {
+        "stopped confirmed".into()
+    });
+    runtime.detection_readback = None;
+    if desired {
+        reopen_speech(runtime);
+    } else {
+        invalidate_speech(runtime, "detection stop observed");
+    }
+}
+
+fn apply_detection_snapshot(runtime: &mut Runtime, snapshot: Snapshot) -> Result<(), String> {
+    expire_detection(runtime);
+    if matches!(
+        &snapshot.state,
+        BoardState::Observed {
+            connected: Some(false),
+            ..
+        }
+    ) {
+        invalidate_speech(runtime, "observed board disconnect");
+    }
+    let snapshot = normalize_snapshot(snapshot);
+    if snapshot.availability != Availability::Available || observed_running(&snapshot).is_none() {
+        runtime.observation_at = None;
+        if let Some(operation) = runtime.detection.as_mut() {
+            operation.fresh_definitive_observation = None;
+        }
+        runtime.detection_readback = Some(snapshot.diagnostic.as_ref().map_or_else(
+            || "state readback unavailable".into(),
+            |error| format!("{} {}", error.stage, error.kind),
+        ));
+        runtime.snapshot.availability = Availability::Unavailable;
+        runtime.snapshot.diagnostic = snapshot.diagnostic;
+        if let Some(operation) = runtime.detection.as_mut() {
+            runtime.command_status = Some(pending_status(operation, &runtime.snapshot));
+        }
+        schedule_detection(runtime);
+        return report(runtime);
+    }
+    runtime.observation_at = Some(detection_now());
+
+    runtime.snapshot = snapshot;
+    runtime.detection_readback = None;
+    let desired = runtime
+        .detection
+        .as_ref()
+        .map(|operation| operation.desired);
+    let confirmed = desired.is_some_and(|desired| confirms(&runtime.snapshot, desired));
+    if let Some(operation) = runtime.detection.as_mut() {
+        operation.fresh_definitive_observation = if operation.expired
+            && observed_running(&runtime.snapshot).is_some_and(|on| confirms(&runtime.snapshot, on))
+        {
+            observed_running(&runtime.snapshot)
+        } else {
+            None
+        };
+        if !confirmed {
+            let status = pending_status(operation, &runtime.snapshot);
+            runtime.command_status = Some(status);
+        }
+    }
+    if confirmed {
+        finish_detection(runtime, desired.expect("confirmed operation"));
+    } else {
+        schedule_detection(runtime);
+    }
+    report(runtime)
+}
+
+fn apply_detection_readback(runtime: &mut Runtime, snapshot: Snapshot) -> Result<(), String> {
+    apply_detection_snapshot(runtime, snapshot)?;
+    if observed_running(&runtime.snapshot) == Some(false)
+        && (runtime.speech_in_flight.is_some()
             || runtime
                 .announcement_session
                 .pending_total_deadline()
@@ -306,14 +567,153 @@ fn poll_now() -> Result<(), String> {
                     | autodarts_core::AnnouncementReadiness::AwaitingRemoval
                     | autodarts_core::AnnouncementReadiness::AwaitingClear
             ))
-        {
-            invalidate_speech(runtime, "observed detection stop");
-            reopen_speech(runtime);
-        }
-        report(runtime)
-    })
+    {
+        invalidate_speech(runtime, "observed detection stop");
+        reopen_speech(runtime);
+    }
+    Ok(())
 }
 
+fn on_detection_timer(runtime: &mut Runtime, id: &str) {
+    let Some(operation) = runtime.detection.as_ref() else {
+        return;
+    };
+    let token = operation.token;
+    if id == format!("detection-expiry:{token}") {
+        if runtime.detection_expiry_timer.as_deref() != Some(id) {
+            return;
+        }
+        expire_detection(runtime);
+        let _ = report(runtime);
+        ui::invalidate("board");
+        return;
+    }
+    if id != format!("detection-poll:{token}")
+        || runtime.detection_poll_timer.as_deref() != Some(id)
+    {
+        return;
+    }
+    runtime.detection_poll_timer = None;
+    if expire_detection(runtime) {
+        let _ = report(runtime);
+        ui::invalidate("board");
+        return;
+    }
+    let snapshot = poll_state(&runtime.config, &mut HostTransport);
+    let _ = apply_detection_readback(runtime, snapshot);
+    ui::invalidate("board");
+}
+
+fn poll_now() -> Result<(), String> {
+    RUNTIME.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let runtime = slot
+            .as_mut()
+            .ok_or_else(|| "Autodarts is not configured.".to_string())?;
+        let snapshot = poll(&runtime.config, &mut HostTransport);
+        apply_detection_readback(runtime, snapshot)
+    })
+}
+fn begin_detection(runtime: &mut Runtime, desired: bool) -> Result<(), String> {
+    let token = DETECTION_GENERATION.with(|generation| {
+        let next = generation.get().saturating_add(1);
+        generation.set(next);
+        next
+    });
+    runtime.detection = Some(DetectionOperation {
+        token,
+        desired,
+        dispatch: DetectionDispatch::Uncertain("dispatching"),
+        started_at: detection_now(),
+        expired: false,
+        fresh_definitive_observation: None,
+    });
+    let command = if desired {
+        DetectionCommand::Start
+    } else {
+        DetectionCommand::Stop
+    };
+    match dispatch_detection(&runtime.config, &mut HostTransport, command) {
+        Ok(dispatch) => {
+            if let Some(operation) = runtime.detection.as_mut() {
+                operation.dispatch = dispatch;
+            }
+            if !desired && dispatch == DetectionDispatch::Acknowledged {
+                invalidate_speech(runtime, "detection stop acknowledged");
+            }
+            runtime.detection_readback = None;
+            if let Some(operation) = runtime.detection.as_ref() {
+                runtime.command_status = Some(pending_status(operation, &runtime.snapshot));
+            }
+            schedule_detection(runtime);
+            report(runtime)?;
+            ui::invalidate("board");
+            Ok(())
+        }
+        Err(reason) => {
+            cancel_detection(runtime);
+            let action = if desired { "start" } else { "stop" };
+            let ambiguous = reason == "command_connection";
+            runtime.command_status = Some(if ambiguous {
+                format!("{action} outcome unknown: {reason}")
+            } else {
+                format!("{action} rejected: {reason}")
+            });
+            runtime.detection_readback = Some(reason.into());
+            report(runtime)?;
+            ui::invalidate("board");
+            if ambiguous {
+                Err(format!("Detection command outcome unknown: {reason}"))
+            } else {
+                Err(format!("Detection command failed: {reason}"))
+            }
+        }
+    }
+}
+
+fn ingest_detection_observation(json: &[u8]) {
+    // Validate the bounded full envelope before promoting any device state.
+    if json.len() > autodarts_core::local_score::MAX_ENVELOPE_BYTES {
+        return;
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(json) else {
+        return;
+    };
+    if !matches!(
+        autodarts_core::local_score::parse_envelope(&value),
+        Ok(autodarts_core::local_score::LocalEvent::State(_))
+    ) {
+        return;
+    }
+    if value.get("type").and_then(serde_json::Value::as_str) != Some("state") {
+        return;
+    }
+    let Some(data) = value.get("data") else {
+        return;
+    };
+    let Ok(body) = serde_json::to_vec(data) else {
+        return;
+    };
+    let Ok(state) = autodarts_core::decode_state(HttpResponse { status: 200, body }) else {
+        return;
+    };
+    RUNTIME.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(runtime) = slot.as_mut() else {
+            return;
+        };
+        let snapshot = Snapshot {
+            availability: Availability::Available,
+            version: None,
+            state,
+            diagnostic: None,
+        };
+        if let Err(error) = apply_detection_snapshot(runtime, snapshot) {
+            log::log(log::Level::Warn, &error);
+        }
+        ui::invalidate("board");
+    });
+}
 fn websocket_url(config: &Config) -> Result<(String, &'static str), String> {
     let mut url = config.board_manager_url.clone();
     let (grant, expected_port) = match url.scheme() {
@@ -760,9 +1160,8 @@ impl CommandTransport for HostTransport {
             timeout_ms: Some(timeout_ms),
         })
         .map_err(map_http)?;
-        if response.body.len() > autodarts_core::MAX_RESPONSE_BYTES {
-            return Err(HttpFailure::TooLarge);
-        }
+        // The complete response status is authoritative; the unused body cannot
+        // turn a definite HTTP rejection into submission uncertainty.
         Ok(response.status)
     }
 }
@@ -787,12 +1186,19 @@ fn append_text_nodes(nodes: &mut Vec<Node>, lines: impl IntoIterator<Item = Stri
     }
 }
 
-fn render_tree(snapshot: &Snapshot, command_status: Option<&str>) -> UiTree {
+fn render_tree(
+    snapshot: &Snapshot,
+    command_status: Option<&str>,
+    detection_readback: Option<&str>,
+) -> UiTree {
     let mut nodes = vec![Node {
         kind: NodeKind::Stack,
         children: Vec::new(),
     }];
-    append_text_nodes(&mut nodes, diagnostics_text(snapshot, command_status));
+    append_text_nodes(
+        &mut nodes,
+        diagnostics_text(snapshot, command_status, detection_readback),
+    );
     UiTree { nodes }
 }
 fn invalidate_speech(runtime: &mut Runtime, reason: &str) {
@@ -868,6 +1274,7 @@ fn reopen_speech(runtime: &mut Runtime) {
 
 fn stop_runtime() -> Option<Runtime> {
     let mut runtime = RUNTIME.with(|slot| slot.borrow_mut().take())?;
+    cancel_detection(&mut runtime);
     let conn = runtime.websocket_id.take();
     invalidate_speech(&mut runtime, "stop");
     if let Some(conn) = conn {
@@ -955,7 +1362,12 @@ impl Guest for Plugin {
                     state: BoardState::Unknown,
                     diagnostic: None,
                 },
+                observation_at: None,
                 command_status: None,
+                detection: None,
+                detection_poll_timer: None,
+                detection_expiry_timer: None,
+                detection_readback: None,
                 speech_session,
                 speech_reopen_pending: false,
                 speech_generation: SPEECH_GENERATION.with(std::cell::Cell::get),
@@ -1014,60 +1426,43 @@ impl Guest for Plugin {
             {
                 return Err("Only detection on/off is supported.".into());
             }
-            let command = if on {
-                DetectionCommand::Start
-            } else {
-                DetectionCommand::Stop
-            };
-            let (outcome, observation) =
-                set_detection(&runtime.config, &mut HostTransport, command);
-            let command_status = match &outcome {
-                DetectionResult::Confirmed(true) => "running confirmed".into(),
-                DetectionResult::Confirmed(false) => "stopped confirmed".into(),
-                DetectionResult::Pending {
-                    desired: true,
-                    observed: Some(false),
-                } => "start acknowledged; still stopped".into(),
-                DetectionResult::Pending {
-                    desired: false,
-                    observed: Some(true),
-                } => "stop acknowledged; still running".into(),
-                DetectionResult::Pending {
-                    desired: true,
-                    observed: None,
-                } => "start acknowledged; observed state unknown".into(),
-                DetectionResult::Pending {
-                    desired: false,
-                    observed: None,
-                } => "stop acknowledged; observed state unknown".into(),
-                DetectionResult::Pending {
-                    desired: true,
-                    observed: Some(true),
-                } => "start acknowledged; observed running".into(),
-                DetectionResult::Pending {
-                    desired: false,
-                    observed: Some(false),
-                } => "stop acknowledged; observed stopped".into(),
-                DetectionResult::Failed(reason) => {
-                    return Err(format!("Detection command failed: {reason}"));
+
+            expire_detection(runtime);
+            let mut superseded = false;
+            if let Some(operation) = runtime.detection.clone() {
+                let unresolved_duplicate = operation.desired == on
+                    // Only reconciliation can complete an operation, never cached state.
+                    && !(operation.expired
+                        && operation.fresh_definitive_observation.is_some()
+                        && runtime.observation_at.is_some_and(|at|
+                            detection_now().saturating_duration_since(at)
+                                <= Duration::from_secs(u64::from(runtime.config.poll_interval_secs))));
+                if unresolved_duplicate {
+                    runtime.command_status = Some(pending_status(&operation, &runtime.snapshot));
+                    report(runtime)?;
+                    ui::invalidate("board");
+                    return Ok(());
                 }
-            };
-            runtime.snapshot = observation;
-            runtime.command_status = Some(command_status);
-            if matches!(
-                outcome,
-                DetectionResult::Confirmed(false) | DetectionResult::Pending { desired: false, .. }
-            ) {
-                invalidate_speech(runtime, "detection stop acknowledged");
-            } else if matches!(outcome, DetectionResult::Confirmed(true)) {
-                reopen_speech(runtime);
+                superseded = operation.desired != on;
+                cancel_detection(runtime);
             }
-            report(runtime)?;
-            ui::invalidate("board");
-            if !matches!(outcome, DetectionResult::Confirmed(_)) {
-                return Err(runtime.command_status.clone().unwrap_or_default());
+            if !superseded
+                && runtime.observation_at.is_some_and(|at|
+                    detection_now().saturating_duration_since(at)
+                        <= Duration::from_secs(u64::from(runtime.config.poll_interval_secs)))
+                && confirms(&runtime.snapshot, on)
+            {
+                runtime.command_status = Some(if on {
+                    "running already confirmed".into()
+                } else {
+                    "stopped already confirmed".into()
+                });
+                runtime.detection_readback = None;
+                report(runtime)?;
+                ui::invalidate("board");
+                return Ok(());
             }
-            Ok(())
+            begin_detection(runtime, on)
         })
     }
     fn on_timer(id: String) {
@@ -1077,6 +1472,12 @@ impl Guest for Plugin {
             }
             poll_speech();
             ui::invalidate("board");
+        } else if id.starts_with("detection-") {
+            RUNTIME.with(|slot| {
+                if let Some(runtime) = slot.borrow_mut().as_mut() {
+                    on_detection_timer(runtime, &id);
+                }
+            });
         } else if id.starts_with("total-deadline:") {
             RUNTIME.with(|slot| {
                 if let Some(runtime) = slot.borrow_mut().as_mut() {
@@ -1110,6 +1511,7 @@ impl Guest for Plugin {
         let (
             snapshot,
             status,
+            detection_readback,
             announcements,
             diagnostics,
             policy_event,
@@ -1123,6 +1525,7 @@ impl Guest for Plugin {
                     (
                         runtime.snapshot.clone(),
                         runtime.command_status.clone(),
+                        runtime.detection_readback.clone(),
                         runtime.announcements.clone(),
                         runtime.announcement_session.diagnostics(),
                         runtime.policy_event,
@@ -1133,7 +1536,7 @@ impl Guest for Plugin {
                 })
                 .ok_or_else(|| "Autodarts is not configured.".to_string())
         })?;
-        let mut tree = render_tree(&snapshot, status.as_deref());
+        let mut tree = render_tree(&snapshot, status.as_deref(), detection_readback.as_deref());
         let lines = vec![
             format!(
                 "Announcement intent: {}",
@@ -1196,6 +1599,7 @@ impl Guest for Plugin {
         }
         match message {
             bindings::niles::integration::websocket::Message::Text(text) => {
+                ingest_detection_observation(text.as_bytes());
                 // The core parser checks byte length before parsing, without
                 // allocating a second oversized buffer.
                 let _ = ingest_announcement_json(text.as_bytes());
@@ -1214,6 +1618,10 @@ impl Guest for Plugin {
             let Some(runtime) = slot.as_mut() else { return };
             if runtime.websocket_id != Some(conn) {
                 return;
+            }
+            runtime.observation_at = None;
+            if let Some(operation) = runtime.detection.as_mut() {
+                operation.fresh_definitive_observation = None;
             }
             match status {
                 bindings::niles::integration::websocket::ConnectionStatus::Connected => {

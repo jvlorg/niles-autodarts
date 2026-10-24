@@ -1,15 +1,20 @@
 use futures_util::SinkExt;
 use niles_core::{DeviceRegistry, EventBus, RoomName};
+use niles_mqtt::CommandRouter;
 use niles_plugins::speech_stream::{
     SessionSpeechHost, SpeechError, SpeechOutcome, SpeechStreamHost,
 };
 use niles_plugins::{Context, House, Limits, MemoryStore, Runtime};
+use niles_tools::{SetDevice, builtin::Publisher, tool::Tool};
 use niles_tts::speech_session::{
     Eligibility, PluginOwner, SpeechEligibility, SpeechOutput, SpeechSessionManager, TerminalResult,
 };
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -331,29 +336,43 @@ impl SpeechStreamHost for ObservedHost {
         }
     }
 }
-
 struct Board {
     task: JoinHandle<()>,
     connections: mpsc::UnboundedReceiver<Socket>,
+    acknowledge_start: Arc<AtomicBool>,
+    incomplete_start: Arc<AtomicBool>,
+    finish_start: Arc<Semaphore>,
+    starts: Arc<AtomicUsize>,
 }
 
 impl Board {
-    async fn start() -> Self {
-        // Plan portability boundary: both the exact candidate and released host
-        // restrict ws:// to declared 80/3180. A port-zero fixture is rejected even
-        // if its address is supplied via settings. Never rewrite the candidate or
-        // broaden production permissions merely to make this proof pass.
+    async fn start(initial_running: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:3180")
             .await
-            .expect("host proof requires free loopback port 3180 (candidate permission); ephemeral-port proof is unsupported by the released contract");
+            .expect("host proof requires free loopback port 3180 (candidate permission)");
         let (connections, rx) = mpsc::unbounded_channel();
+        let running = Arc::new(AtomicBool::new(initial_running));
+        let board_running = Arc::clone(&running);
+        let acknowledge_start = Arc::new(AtomicBool::new(false));
+        let board_acknowledge = Arc::clone(&acknowledge_start);
+        let incomplete_start = Arc::new(AtomicBool::new(false));
+        let board_incomplete = Arc::clone(&incomplete_start);
+        let finish_start = Arc::new(Semaphore::new(0));
+        let board_finish_start = Arc::clone(&finish_start);
+        let starts = Arc::new(AtomicUsize::new(0));
+        let board_starts = Arc::clone(&starts);
         let task = tokio::spawn(async move {
             let mut children = JoinSet::new();
             loop {
                 tokio::select! {
                     accepted = listener.accept() => {
                         let (mut stream, _) = accepted.unwrap();
+                        let board_running = Arc::clone(&board_running);
                         let connections = connections.clone();
+                        let acknowledge = Arc::clone(&board_acknowledge);
+                        let incomplete = Arc::clone(&board_incomplete);
+                        let finish_start = Arc::clone(&board_finish_start);
+                        let starts = Arc::clone(&board_starts);
                         children.spawn(async move {
                             let mut peek = [0u8; 1024];
                             let count = tokio::time::timeout(WAIT, async {
@@ -377,17 +396,34 @@ impl Board {
                                 let _ = connections.send(socket);
                                 return;
                             }
-                            // Consume the HTTP request before closing the socket;
-                            // unread receive data can otherwise reset the response.
                             stream.read_exact(&mut peek[..count]).await.unwrap();
-                            let body = if peek[..count].starts_with(b"GET /api/version ") {
-                                "1.0.0-fixture"
+                            let (status, body) = if peek[..count].starts_with(b"PUT /api/start ") {
+                                starts.fetch_add(1, Ordering::SeqCst);
+                                if incomplete.load(Ordering::SeqCst) {
+                                    stream.write_all(b"HTTP/1.1 204 No Content\r\n").await.unwrap();
+                                    stream.shutdown().await.unwrap();
+                                    return;
+                                }
+                                if acknowledge.load(Ordering::SeqCst) {
+                                    stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+                                    stream.shutdown().await.unwrap();
+                                }
+                                finish_start.acquire().await.unwrap().forget();
+                                board_running.store(true, Ordering::SeqCst);
+                                return;
+                            } else if peek[..count].starts_with(b"PUT /api/stop ") {
+                                ("503 Service Unavailable", String::new())
+                            } else if peek[..count].starts_with(b"GET /api/version ") {
+                                ("200 OK", "1.0.0-fixture".into())
                             } else if peek[..count].starts_with(b"GET /api/state ") {
-                                r#"{"connected":true,"running":true,"numThrows":0}"#
+                                let running = board_running.load(Ordering::SeqCst);
+                                (
+                                    "200 OK",
+                                    format!(r#"{{"connected":true,"running":{running},"numThrows":0}}"#),
+                                )
                             } else {
-                                ""
+                                ("404 Not Found", String::new())
                             };
-                            let status = if body.is_empty() { "404 Not Found" } else { "200 OK" };
                             let response = format!(
                                 "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                                 body.len()
@@ -404,6 +440,10 @@ impl Board {
         Self {
             task,
             connections: rx,
+            acknowledge_start,
+            incomplete_start,
+            finish_start,
+            starts,
         }
     }
 
@@ -433,6 +473,7 @@ async fn send<T: AsRef<str>>(socket: &mut Socket, frames: &[T]) {
 
 struct Proof {
     runtime: Runtime,
+    registry: Arc<DeviceRegistry>,
     settings: Arc<Mutex<toml::Table>>,
     board: Board,
     host: Arc<ObservedHost>,
@@ -442,6 +483,9 @@ struct Proof {
 
 impl Proof {
     async fn start(mode: &str) -> (Self, Socket) {
+        Self::start_with_initial(mode, true).await
+    }
+    async fn start_with_initial(mode: &str, initial_running: bool) -> (Self, Socket) {
         let wasm = std::path::PathBuf::from(
             std::env::var_os("NILES_COMPONENT_WASM")
                 .expect("set NILES_COMPONENT_WASM to the exact staged integration.wasm"),
@@ -454,7 +498,7 @@ impl Proof {
             "compiled candidate: {} (manifest unchanged; loopback port 3180 required)",
             wasm.display()
         );
-        let mut board = Board::start().await;
+        let mut board = Board::start(initial_running).await;
         let settings = Arc::new(Mutex::new(toml::Table::from_iter([
             (
                 "address".into(),
@@ -467,8 +511,9 @@ impl Proof {
             ("speech_stream_enabled".into(), toml::Value::Boolean(true)),
         ])));
         let config = Arc::clone(&settings);
+        let registry = Arc::new(DeviceRegistry::new());
         let house = House::new(
-            Arc::new(DeviceRegistry::new()),
+            Arc::clone(&registry),
             EventBus::new(128),
             Arc::new(MemoryStore::new()),
         )
@@ -485,6 +530,7 @@ impl Proof {
         (
             Self {
                 runtime,
+                registry,
                 settings,
                 board,
                 host,
@@ -999,8 +1045,72 @@ async fn active_transport_is_not_replaced() {
     manager.shutdown().await;
 }
 
+async fn compiled_connection_errors_remain_ambiguous() {
+    let (mut proof, mut socket) = Proof::start_with_initial("total_only", false).await;
+    let id = tokio::time::timeout(WAIT, async {
+        loop {
+            if let Some(device) = proof
+                .registry
+                .list_all()
+                .into_iter()
+                .find(|device| device.id.to_string().contains("living_room/dartboard"))
+            {
+                break device.id;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("component registers the controllable board");
+    let tool = SetDevice::new(
+        Arc::clone(&proof.registry),
+        NoMqtt,
+        Arc::new(CommandRouter::z2m_only("unused").with_commander(Arc::new(proof.runtime.clone()))),
+        false,
+    );
+    proof.board.incomplete_start.store(true, Ordering::SeqCst);
+    let incomplete = tool
+        .execute(serde_json::json!({"device_id": id.to_string(), "on": true}))
+        .await
+        .expect_err("incomplete response must not become a successful command");
+    let incomplete_message = incomplete.to_string();
+    assert!(
+        incomplete_message.contains("unknown") && incomplete_message.contains("command_connection")
+    );
+    assert!(!incomplete_message.contains("rejected"));
+    assert_eq!(proof.registry.get(&id).unwrap().state.on, Some(false));
+    assert_eq!(proof.board.starts.load(Ordering::SeqCst), 1);
+
+    proof.board.task.abort();
+    assert!((&mut proof.board.task).await.unwrap_err().is_cancelled());
+    let unavailable = TcpStream::connect("127.0.0.1:3180").await.unwrap_err();
+    assert_eq!(unavailable.kind(), std::io::ErrorKind::ConnectionRefused);
+    let closed = tool
+        .execute(serde_json::json!({"device_id": id.to_string(), "on": true}))
+        .await
+        .expect_err("unreachable endpoint must not become a successful command");
+    let closed_message = closed.to_string();
+    assert!(closed_message.contains("unknown") && closed_message.contains("command_connection"));
+    assert!(!closed_message.contains("rejected"));
+    assert_eq!(proof.registry.get(&id).unwrap().state.on, Some(false));
+    assert_eq!(
+        proof.board.starts.load(Ordering::SeqCst),
+        1,
+        "closed listener cannot receive another start request"
+    );
+
+    println!("compiled ambiguous command outcomes: incomplete={incomplete}; closed={closed}");
+    socket.close(None).await.unwrap();
+    let Proof {
+        runtime, manager, ..
+    } = proof;
+    runtime.shutdown().await;
+    manager.shutdown().await;
+}
 #[tokio::test(flavor = "multi_thread")]
 async fn compiled_component_uses_real_niles_speech_scheduler() {
+    compiled_detection_command_crosses_response_deadline().await;
+    compiled_connection_errors_remain_ambiguous().await;
     active_transport_is_not_replaced().await;
     ordered_and_repeated_removal().await;
     ordered_speech_does_not_replace_the_last_dart().await;
@@ -1034,4 +1144,109 @@ async fn compiled_component_uses_real_niles_speech_scheduler() {
         "jvl14-exact-reduced-capture/total-only",
     )
     .await;
+}
+struct NoMqtt;
+
+#[async_trait::async_trait]
+impl Publisher for NoMqtt {
+    async fn publish(&self, _: &str, _: Vec<u8>) -> niles_mqtt::Result<()> {
+        panic!("a component device command must not fall through to MQTT");
+    }
+}
+
+async fn compiled_detection_command_crosses_response_deadline() {
+    for acknowledge in [true, false] {
+        compiled_detection_command_outcome(acknowledge).await;
+    }
+}
+
+async fn compiled_detection_command_outcome(acknowledge: bool) {
+    let (proof, mut socket) = Proof::start_with_initial("total_only", false).await;
+    proof
+        .board
+        .acknowledge_start
+        .store(acknowledge, Ordering::SeqCst);
+    let id = tokio::time::timeout(WAIT, async {
+        loop {
+            if let Some(device) = proof
+                .registry
+                .list_all()
+                .into_iter()
+                .find(|device| device.id.to_string().contains("living_room/dartboard"))
+            {
+                break device.id;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("component registers the controllable board");
+    println!("compiled device id: {id}");
+    let tool = SetDevice::new(
+        Arc::clone(&proof.registry),
+        NoMqtt,
+        Arc::new(CommandRouter::z2m_only("unused").with_commander(Arc::new(proof.runtime.clone()))),
+        false,
+    );
+    let start = serde_json::json!({"device_id": id.to_string(), "on": true});
+    let result = tool
+        .execute(start.clone())
+        .await
+        .expect("handled pending command");
+    let before = proof.registry.get(&id).expect("reported device").state.on;
+    println!(
+        "detection pending model result (acknowledge={acknowledge}): {result}; reported_on={before:?}"
+    );
+    assert_eq!(
+        result,
+        serde_json::json!({"ok": true, "device": id.to_string()})
+    );
+    assert_eq!(before, Some(false));
+    let duplicate = tool.execute(start.clone()).await.unwrap();
+    assert_eq!(duplicate, result);
+    assert_eq!(proof.board.starts.load(Ordering::SeqCst), 1);
+    proof.board.finish_start.add_permits(1);
+
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            if proof
+                .registry
+                .get(&id)
+                .is_some_and(|device| device.state.on == Some(true))
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("delayed board startup reaches the component's later readback");
+    let after = proof.registry.get(&id).expect("reported device").state.on;
+    let confirmed = tool.execute(start).await.unwrap();
+    println!("detection observed model result: {confirmed}; reported_on={after:?}");
+    assert_eq!(proof.board.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(after, Some(true));
+
+    let rejection = tool
+        .execute(serde_json::json!({"device_id": id.to_string(), "on": false}))
+        .await
+        .expect_err("complete non-2xx response remains rejection");
+    println!("detection rejection tool error: {rejection}");
+    assert!(rejection.to_string().contains("command_http_status"));
+    assert_eq!(
+        proof.registry.get(&id).expect("reported device").state.on,
+        Some(true)
+    );
+
+    socket.close(None).await.unwrap();
+    let Proof {
+        runtime,
+        manager,
+        mut board,
+        ..
+    } = proof;
+    runtime.shutdown().await;
+    manager.shutdown().await;
+    board.task.abort();
+    let _ = (&mut board.task).await;
 }

@@ -1,0 +1,32 @@
+{
+  "evidence": "synthetic timing schedule based on reported receive-only observation; not a raw capture",
+  "reported_delay_seconds": 15.575831,
+  "scenarios": [
+    {
+      "name": "acknowledged-start",
+      "dispatch": "http_2xx",
+      "events": [
+        {"at_seconds": 0.0, "type": "state", "data": {"connected": true, "running": false, "status": "Starting", "event": "Starting", "numThrows": 0}},
+        {"at_seconds": 15.575831, "type": "state", "data": {"connected": true, "running": true, "status": "Throw", "event": "Started", "numThrows": 0}}
+      ],
+      "expected": {"before_started": false, "after_started": true}
+    },
+    {
+      "name": "response-timeout-start",
+      "dispatch": "response_timeout",
+      "events": [
+        {"at_seconds": 0.0, "type": "state", "data": {"connected": true, "running": false, "status": "Starting", "event": "Starting", "numThrows": 0}},
+        {"at_seconds": 15.575831, "type": "state", "data": {"connected": true, "running": true, "status": "Throw", "event": "Started", "numThrows": 0}}
+      ],
+      "expected": {"before_started": false, "after_started": true}
+    },
+    {
+      "name": "never-completes",
+      "dispatch": "http_2xx",
+      "events": [
+        {"at_seconds": 0.0, "type": "state", "data": {"connected": true, "running": false, "status": "Starting", "event": "Starting", "numThrows": 0}}
+      ],
+      "expected": {"expires_without_rejection": true}
+    }
+  ]
+}
