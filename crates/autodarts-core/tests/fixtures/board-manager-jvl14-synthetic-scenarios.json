@@ -1,0 +1,25 @@
+{
+  "provenance": "synthetic scenarios; not a provider capture",
+  "partial_round_takeout": [
+    {"type":"state","data":{"running":true,"numThrows":0,"throws":[]}},
+    {"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"number":20,"multiplier":1}}]}},
+    {"type":"state","data":{"running":true,"numThrows":2,"throws":[{"segment":{"number":20,"multiplier":1}},{"segment":{"number":5,"multiplier":1}}]}},
+    {"type":"motion_state","data":{"isTakeoutFull":true}}
+  ],
+  "deadline_timer_first": [
+    {"type":"state","data":{"running":true,"numThrows":0,"throws":[]}},
+    {"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"number":20,"multiplier":1}}]}},
+    {"type":"state","data":{"running":true,"numThrows":2,"throws":[{"segment":{"number":20,"multiplier":1}},{"segment":{"number":5,"multiplier":1}}]}},
+    {"type":"state","data":{"running":true,"numThrows":3,"throws":[{"segment":{"number":20,"multiplier":1}},{"segment":{"number":5,"multiplier":1}},{"segment":{"number":1,"multiplier":1}}]}}
+  ],
+  "deadline_takeout_first": [
+    {"type":"state","data":{"running":true,"numThrows":0,"throws":[]}},
+    {"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"number":20,"multiplier":1}}]}},
+    {"type":"motion_state","data":{"isTakeoutPartial":true}}
+  ],
+  "detected_zero_round": [
+    {"type":"state","data":{"running":true,"numThrows":0,"throws":[]}},
+    {"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"name":"M19","number":19,"bed":"Outside","multiplier":0}}]}},
+    {"type":"motion_state","data":{"isTakeoutFull":true}}
+  ]
+}

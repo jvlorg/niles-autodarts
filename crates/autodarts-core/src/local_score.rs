@@ -12,6 +12,19 @@ pub struct LocalState {
     pub running: Option<bool>,
     pub num_throws: Option<u32>,
     pub throws: Option<Vec<u8>>,
+    pub takeout: Option<TakeoutEvidence>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TakeoutEvidence {
+    Started,
+    Finished,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RoundToken {
+    pub epoch: u64,
+    pub collection: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -96,6 +109,17 @@ pub fn parse_state(value: &Value) -> Result<LocalState, &'static str> {
         return Err("state must be an object");
     }
     let running = optional_bool(value, "running")?;
+    let connected = optional_bool(value, "connected")?;
+    let status = optional_text(value, "status")?;
+    let event = optional_text(value, "event")?;
+    // Starting may report running=true before detection is actually ready.
+    let running =
+        if connected == Some(false) || status == Some("Starting") || event == Some("Starting") {
+            Some(false)
+        } else {
+            running
+        };
+    let takeout = optional_takeout(event, status);
     let num_throws = match value.get("numThrows") {
         Some(Value::Number(n)) => {
             let count = n
@@ -125,13 +149,32 @@ pub fn parse_state(value: &Value) -> Result<LocalState, &'static str> {
                     .get("multiplier")
                     .and_then(Value::as_u64)
                     .ok_or("invalid multiplier")?;
-                if !matches!(number, 0..=20 | 25)
-                    || !matches!(multiplier, 1..=3)
-                    || (number == 25 && multiplier == 3)
-                {
-                    return Err("out-of-range dart");
-                }
-                scores.push(u8::try_from(number * multiplier).map_err(|_| "out-of-range dart")?);
+                let score = if multiplier == 0 {
+                    let valid_miss = (1..=20).contains(&number)
+                        && segment.get("bed").and_then(Value::as_str) == Some("Outside")
+                        && segment
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .and_then(|name| name.strip_prefix('M'))
+                            .is_some_and(|digits| {
+                                !digits.starts_with('0')
+                                    && digits.bytes().all(|byte| byte.is_ascii_digit())
+                                    && digits.parse::<u64>().ok() == Some(number)
+                            });
+                    if !valid_miss {
+                        return Err("invalid outside miss");
+                    }
+                    0
+                } else {
+                    if !matches!(number, 0..=20 | 25)
+                        || !matches!(multiplier, 1..=3)
+                        || (number == 25 && multiplier == 3)
+                    {
+                        return Err("out-of-range dart");
+                    }
+                    number * multiplier
+                };
+                scores.push(u8::try_from(score).map_err(|_| "out-of-range dart")?);
             }
             Some(scores)
         }
@@ -148,6 +191,7 @@ pub fn parse_state(value: &Value) -> Result<LocalState, &'static str> {
         running,
         num_throws,
         throws,
+        takeout,
     })
 }
 
@@ -158,7 +202,22 @@ fn optional_bool(value: &Value, key: &str) -> Result<Option<bool>, &'static str>
         _ => Err("invalid boolean state"),
     }
 }
+fn optional_text<'a>(value: &'a Value, key: &str) -> Result<Option<&'a str>, &'static str> {
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => Ok(Some(text)),
+        Some(_) => Err("invalid text state"),
+    }
+}
 
+fn optional_takeout(event: Option<&str>, status: Option<&str>) -> Option<TakeoutEvidence> {
+    match event {
+        Some("Takeout finished") => Some(TakeoutEvidence::Finished),
+        Some("Takeout started") => Some(TakeoutEvidence::Started),
+        _ if status == Some("Takeout in progress") => Some(TakeoutEvidence::Started),
+        _ => None,
+    }
+}
 pub fn parse_envelope(value: &Value) -> Result<LocalEvent, &'static str> {
     if !value.is_object() {
         return Err("event envelope must be an object");
@@ -167,13 +226,14 @@ pub fn parse_envelope(value: &Value) -> Result<LocalEvent, &'static str> {
         .get("type")
         .and_then(Value::as_str)
         .ok_or("missing event type")?;
-    if !matches!(kind, "state" | "motion_state") {
-        return Ok(LocalEvent::Unknown);
-    }
-    let data = value.get("data").ok_or("missing event data")?;
     match kind {
-        "state" => parse_state(data).map(LocalEvent::State),
+        "state" => value
+            .get("data")
+            .ok_or("missing event data")
+            .and_then(parse_state)
+            .map(LocalEvent::State),
         "motion_state" => {
+            let data = value.get("data").ok_or("missing event data")?;
             if !data.is_object() {
                 return Err("motion data must be an object");
             }
@@ -182,7 +242,7 @@ pub fn parse_envelope(value: &Value) -> Result<LocalEvent, &'static str> {
                 takeout_full: optional_bool(data, "isTakeoutFull")?,
             })
         }
-        _ => unreachable!("known event type checked above"),
+        _ => Ok(LocalEvent::Unknown),
     }
 }
 
@@ -203,7 +263,9 @@ pub struct LocalJourney {
     announced: usize,
     tainted: bool,
     removal_seen: bool,
+    takeout_active: bool,
     removal_candidate: Option<Vec<u8>>,
+    deadline: Option<RoundToken>,
     in_flight: BTreeSet<String>,
     settings: Option<(AnnouncementMode, String)>,
     last_event: Option<AnnouncementEvent>,
@@ -223,7 +285,9 @@ impl LocalJourney {
         self.announced = 0;
         self.tainted = false;
         self.removal_seen = false;
+        self.takeout_active = false;
         self.removal_candidate = None;
+        self.deadline = None;
         self.last_event = None;
     }
     pub fn diagnostics(&self) -> AnnouncementDiagnostics {
@@ -246,10 +310,12 @@ impl LocalJourney {
             last_event: self.last_event,
         }
     }
+
     pub fn reject_input(&mut self) -> JourneyResult {
         self.tainted = true;
         self.previous = None;
         self.removal_candidate = None;
+        self.deadline = None;
         self.phase = Some(Phase::AwaitingBaseline);
         self.darts.clear();
         self.announced = 0;
@@ -258,6 +324,33 @@ impl LocalJourney {
             reason: AnnouncementReason::InvalidInput,
         });
         JourneyResult::Invalid
+    }
+
+    pub fn pending_total_deadline(&self) -> Option<RoundToken> {
+        self.deadline
+    }
+
+    pub fn on_total_deadline<D: AnnouncementDelivery>(
+        &mut self,
+        token: RoundToken,
+        mode: AnnouncementMode,
+        room: &str,
+        delivery: &mut D,
+    ) -> JourneyResult {
+        if self.deadline != Some(token) {
+            return JourneyResult::Suppressed;
+        }
+        self.deadline = None;
+        let result = self.complete(mode, room, delivery);
+        self.last_event = Some(AnnouncementEvent {
+            disposition: AnnouncementDisposition::Processed,
+            reason: if matches!(result, JourneyResult::DeliveryFailed(_)) {
+                AnnouncementReason::DeliveryFailure
+            } else {
+                AnnouncementReason::TotalAccepted
+            },
+        });
+        result
     }
     pub fn ingest<D: AnnouncementDelivery>(
         &mut self,
@@ -324,8 +417,33 @@ impl LocalJourney {
                 takeout_full: Some(true),
                 ..
             } => self.removal(mode, room, delivery),
+            LocalEvent::Motion {
+                takeout_partial: Some(false),
+                takeout_full: Some(false),
+            } => {
+                self.takeout_active = false;
+                JourneyResult::Suppressed
+            }
             LocalEvent::Motion { .. } => JourneyResult::Suppressed,
-            LocalEvent::State(state) => self.state(state, mode, room, delivery),
+            LocalEvent::State(state) => {
+                let takeout = state.takeout;
+                let result = self.state(state, mode, room, delivery);
+                if takeout.is_some()
+                    && !matches!(
+                        result,
+                        JourneyResult::Invalid | JourneyResult::DeliveryFailed(_)
+                    )
+                {
+                    let total = self.removal(mode, room, delivery);
+                    if total == JourneyResult::Suppressed {
+                        result
+                    } else {
+                        total
+                    }
+                } else {
+                    result
+                }
+            }
         };
         if result == JourneyResult::Invalid {
             self.reject_input();
@@ -417,34 +535,21 @@ impl LocalJourney {
             self.tainted = false;
             self.removal_seen = false;
             self.removal_candidate = None;
+            self.deadline = None;
             self.serial = self.serial.saturating_add(1);
             self.in_flight.clear();
             return JourneyResult::Baseline;
         }
         if self.phase != Some(Phase::Collecting) {
             if self.phase == Some(Phase::AwaitingClear) {
-                if self.removal_candidate.is_some() {
-                    let old = self
-                        .previous
-                        .as_ref()
-                        .and_then(|previous| previous.throws.as_ref());
-                    if let (Some(old), Some(new)) = (old, state.throws.as_ref())
-                        && old.ends_with(new)
-                    {
-                        self.previous = Some(state);
-                        return JourneyResult::Suppressed;
-                    }
-                    return self.reject_input();
-                }
                 let old = self.previous.as_ref().and_then(|s| s.throws.as_ref());
                 if let (Some(old), Some(new)) = (old, state.throws.as_ref())
-                    && new.len() < old.len()
+                    && old.ends_with(new)
                 {
-                    self.removal_candidate = None;
-                    self.tainted = true;
                     self.previous = Some(state);
                     return JourneyResult::Suppressed;
                 }
+                return self.reject_input();
             }
             self.previous = Some(state.clone());
             if state.throws.as_ref().is_some_and(Vec::is_empty) && state.num_throws == Some(0) {
@@ -456,6 +561,7 @@ impl LocalJourney {
                 self.tainted = false;
                 self.removal_seen = false;
                 self.removal_candidate = None;
+                self.deadline = None;
                 return JourneyResult::Baseline;
             }
             self.phase = Some(Phase::AwaitingBaseline);
@@ -519,6 +625,12 @@ impl LocalJourney {
         self.previous = Some(state);
         self.darts = new.clone();
         self.removal_candidate = None;
+        if new.len() == MAX_DARTS && self.deadline.is_none() {
+            self.deadline = Some(RoundToken {
+                epoch: self.epoch,
+                collection: self.serial,
+            });
+        }
         if mode == AnnouncementMode::TotalOnly {
             return JourneyResult::Dart(None);
         }
@@ -539,6 +651,19 @@ impl LocalJourney {
         }
     }
     fn removal<D: AnnouncementDelivery>(
+        &mut self,
+        mode: AnnouncementMode,
+        room: &str,
+        delivery: &mut D,
+    ) -> JourneyResult {
+        if self.takeout_active {
+            return JourneyResult::Suppressed;
+        }
+        self.takeout_active = true;
+        self.complete(mode, room, delivery)
+    }
+
+    fn complete<D: AnnouncementDelivery>(
         &mut self,
         mode: AnnouncementMode,
         room: &str,
@@ -571,6 +696,7 @@ impl LocalJourney {
             .and_then(|state| state.throws.as_ref())
             .is_some_and(Vec::is_empty);
         self.darts = candidate.clone();
+        self.deadline = None;
         let total: u16 = candidate.iter().map(|v| u16::from(*v)).sum();
         let key = self.key("total", candidate_len);
         if !self.in_flight.insert(key.clone()) {
@@ -578,7 +704,7 @@ impl LocalJourney {
         }
         // The explicit boundary is consumed even when submission fails. A clear
         // already observed belongs to this collection, not the next one.
-        let result = deliver(delivery, room, &total.to_string(), key);
+        // Consume completion before crossing the injectable delivery boundary.
         self.serial = self.serial.saturating_add(1);
         if clear_before_marker {
             self.phase = Some(Phase::Collecting);
@@ -592,6 +718,7 @@ impl LocalJourney {
             self.removal_seen = true;
             self.phase = Some(Phase::AwaitingClear);
         }
+        let result = deliver(delivery, room, &total.to_string(), key);
         match result {
             Ok(()) => JourneyResult::Total(Some(total)),
             Err(error) => JourneyResult::DeliveryFailed(error),
@@ -661,6 +788,12 @@ mod tests {
             takeout_full: None,
         }
     }
+    fn neutral() -> LocalEvent {
+        LocalEvent::Motion {
+            takeout_partial: Some(false),
+            takeout_full: Some(false),
+        }
+    }
     fn full() -> LocalEvent {
         LocalEvent::Motion {
             takeout_partial: Some(false),
@@ -673,6 +806,7 @@ mod tests {
         let mut j = LocalJourney::default();
         let mut d = RecordingDelivery::default();
         for _ in 0..3 {
+            ingest(&mut j, neutral(), &mut d);
             ingest(&mut j, empty(), &mut d);
             ingest(&mut j, state(&[20]), &mut d);
             assert_eq!(
@@ -784,6 +918,7 @@ mod tests {
                 AnnouncementReadiness::Collecting { dart_count: 0 }
             );
             j.ingest(true, mode, ROOM, state(&[7]), &mut d);
+            j.ingest(true, mode, ROOM, neutral(), &mut d);
             assert_eq!(
                 j.ingest(true, mode, ROOM, full(), &mut d),
                 JourneyResult::Total(Some(7))
@@ -861,6 +996,7 @@ mod tests {
                 JourneyResult::Suppressed
             );
             j.ingest(true, mode, ROOM, state(&[7]), &mut d);
+            j.ingest(true, mode, ROOM, neutral(), &mut d);
             assert_eq!(
                 j.ingest(true, mode, ROOM, full(), &mut d),
                 JourneyResult::Total(Some(7))
@@ -906,6 +1042,7 @@ mod tests {
                     JourneyResult::Suppressed
                 );
                 j.ingest(true, mode, ROOM, empty(), &mut d);
+                j.ingest(true, mode, ROOM, neutral(), &mut d);
                 j.ingest(true, mode, ROOM, state(&[5]), &mut d);
                 assert_eq!(
                     j.ingest(true, mode, ROOM, full(), &mut d),
@@ -1038,6 +1175,7 @@ mod tests {
         let mut j = LocalJourney::default();
         let mut d = RecordingDelivery::default();
         for completed in 0..3 {
+            j.ingest(true, AnnouncementMode::TotalOnly, ROOM, neutral(), &mut d);
             j.ingest(
                 true,
                 AnnouncementMode::TotalOnly,
@@ -1088,6 +1226,13 @@ mod tests {
         let mut j = LocalJourney::default();
         let mut unavailable = UnavailableDelivery;
         for _ in 0..300 {
+            j.ingest(
+                true,
+                AnnouncementMode::TotalOnly,
+                ROOM,
+                neutral(),
+                &mut unavailable,
+            );
             j.ingest(
                 true,
                 AnnouncementMode::TotalOnly,
@@ -1217,5 +1362,160 @@ mod tests {
             parse_json(br#"{"type":"camera_status"}"#).unwrap(),
             LocalEvent::Unknown
         );
+    }
+    #[test]
+    fn parser_accepts_only_canonical_outside_misses() {
+        let valid = json!({
+            "numThrows": 1,
+            "throws": [{"segment": {"name": "M19", "number": 19, "bed": "Outside", "multiplier": 0}}]
+        });
+        assert_eq!(parse_state(&valid).unwrap().throws, Some(vec![0]));
+        for invalid in [
+            json!({"numThrows":1,"throws":[{"segment":{"name":"M19","number":19,"multiplier":0}}]}),
+            json!({"numThrows":1,"throws":[{"segment":{"name":"M19","number":19,"multiplier":0,"bed":"Single"}}]}),
+            json!({"numThrows":1,"throws":[{"segment":{"name":"M019","number":19,"multiplier":0,"bed":"Outside"}}]}),
+            json!({"numThrows":1,"throws":[{"segment":{"name":"M+19","number":19,"multiplier":0,"bed":"Outside"}}]}),
+            json!({"numThrows":1,"throws":[{"segment":{"name":"M18","number":19,"multiplier":0,"bed":"Outside"}}]}),
+            json!({"numThrows":1,"throws":[{"segment":{"name":"M0","number":0,"multiplier":0,"bed":"Outside"}}]}),
+            json!({"numThrows":1,"throws":[{"segment":{"name":"M25","number":25,"multiplier":0,"bed":"Outside"}}]}),
+            json!({"numThrows":1,"throws":[{"segment":{"name":"M19","number":19.0,"multiplier":0,"bed":"Outside"}}]}),
+        ] {
+            assert!(
+                parse_state(&invalid).is_err(),
+                "accepted invalid miss: {invalid}"
+            );
+        }
+        assert!(
+            parse_state(&json!({
+                "numThrows": 1,
+                "throws": [{"segment": {"number": 19, "multiplier": 0}}]
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn third_dart_arms_one_deadline_and_expiry_completes_total_once() {
+        for mode in [
+            AnnouncementMode::EachDartThenTotal,
+            AnnouncementMode::TotalOnly,
+        ] {
+            let mut journey = LocalJourney::default();
+            let mut delivery = RecordingDelivery::default();
+            journey.ingest(true, mode, ROOM, empty(), &mut delivery);
+            journey.ingest(true, mode, ROOM, state(&[10]), &mut delivery);
+            journey.ingest(true, mode, ROOM, state(&[10, 20]), &mut delivery);
+            journey.ingest(true, mode, ROOM, state(&[10, 20, 0]), &mut delivery);
+            let token = journey
+                .pending_total_deadline()
+                .expect("third dart deadline");
+            journey.ingest(true, mode, ROOM, state(&[10, 20, 0]), &mut delivery);
+            assert_eq!(journey.pending_total_deadline(), Some(token));
+            assert_eq!(
+                journey.on_total_deadline(
+                    RoundToken {
+                        epoch: token.epoch,
+                        collection: token.collection.saturating_add(1),
+                    },
+                    mode,
+                    ROOM,
+                    &mut delivery,
+                ),
+                JourneyResult::Suppressed
+            );
+            assert_eq!(
+                journey.on_total_deadline(token, mode, ROOM, &mut delivery),
+                JourneyResult::Total(Some(30))
+            );
+            assert_eq!(
+                journey.on_total_deadline(token, mode, ROOM, &mut delivery),
+                JourneyResult::Suppressed
+            );
+            let expected = if mode == AnnouncementMode::EachDartThenTotal {
+                ["10", "20", "0", "30"].as_slice()
+            } else {
+                ["30"].as_slice()
+            };
+            assert_eq!(
+                delivery
+                    .requests
+                    .iter()
+                    .map(|request| request.text.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_takeout_finish_completes_before_deadline_but_status_does_not() {
+        let mut journey = LocalJourney::default();
+        let mut delivery = RecordingDelivery::default();
+        journey.ingest(
+            true,
+            AnnouncementMode::TotalOnly,
+            ROOM,
+            empty(),
+            &mut delivery,
+        );
+        journey.ingest(
+            true,
+            AnnouncementMode::TotalOnly,
+            ROOM,
+            state(&[20]),
+            &mut delivery,
+        );
+        journey.ingest(
+            true,
+            AnnouncementMode::TotalOnly,
+            ROOM,
+            state(&[20, 5]),
+            &mut delivery,
+        );
+        journey.ingest(
+            true,
+            AnnouncementMode::TotalOnly,
+            ROOM,
+            state(&[20, 5, 1]),
+            &mut delivery,
+        );
+        assert!(journey.pending_total_deadline().is_some());
+        let status_only = parse_state(&json!({
+            "status": "Takeout",
+            "numThrows": 3,
+            "throws": [
+                {"segment":{"number":20,"multiplier":1}},
+                {"segment":{"number":5,"multiplier":1}},
+                {"segment":{"number":1,"multiplier":1}}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            journey.ingest(
+                true,
+                AnnouncementMode::TotalOnly,
+                ROOM,
+                LocalEvent::State(status_only),
+                &mut delivery,
+            ),
+            JourneyResult::Suppressed
+        );
+        assert!(delivery.requests.is_empty());
+        let finished = parse_state(&json!({
+            "event": "Takeout finished",
+            "numThrows": 0
+        }))
+        .unwrap();
+        assert_eq!(
+            journey.ingest(
+                true,
+                AnnouncementMode::TotalOnly,
+                ROOM,
+                LocalEvent::State(finished),
+                &mut delivery,
+            ),
+            JourneyResult::Total(Some(26))
+        );
+        assert_eq!(journey.pending_total_deadline(), None);
     }
 }

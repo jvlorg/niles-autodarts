@@ -9,7 +9,7 @@ The add-on owns Board Manager parsing, bounded local collection policy, and requ
 | HTTP state | Add-on GETs `/api/version` and `/api/state` | Status and baseline poll only | Never promoted to real-time event ingress |
 | Detection control | Add-on bodyless PUT `/api/start` or `/api/stop` | Implemented | Detection only; no power, reset, or game creation |
 | Event provider | Board Manager `/api/events` WebSocket `{type,data}` text | Active-connection text frames up to 64 KiB enter `AnnouncementSession` | Non-text, malformed, oversized and overflow events discard pending speech and reset eligibility; stale connection IDs are ignored; live ordering remains open |
-| Reducer | Session validates darts and explicit partial/full removal markers | Implemented transport-independent policy | Synthetic JSON only; local total is not a credited match score |
+| Reducer | Session validates darts, explicit state/motion takeout evidence, and the third-dart deadline | Implemented transport-independent policy | Exact reduced-capture replay and separate synthetic scenarios; local total is not a credited match score |
 | Delivery boundary | Session submits numeric text, room-bound intent, collection key, and mode | Core adapter records attempts; component adapter submits to Niles speech stream | `Accepted` means adapter accepted the request, not audible delivery |
 | Speech stream | Component opens Niles 0.5 room-bound stream and submits text | Niles scheduler owns pending replacement and final output | IDs and status are tracked; selected-satellite routing and audibility remain unproven |
 | Outcomes | Host returns terminal outcomes in request-ID order; accepted requests remain locally pending until observed | Component polls on event ingress and the existing timer, retaining bounded history | Poll errors retain pending; no utterance retry |
@@ -19,7 +19,7 @@ The add-on owns Board Manager parsing, bounded local collection policy, and requ
 
 Announcement intent opens `/api/events`; both announcement intent and `speech_stream_enabled` gate the configured room stream. A request is keyed by connection generation and collection serial. The component records the host request ID and exposes pending state separately from `delivered`, `busy`, `quiet`, `expired`, `failed`, `cancelled`, `replaced`, `rate-limited`, and `no-satellite`. Reset and reconnect detach stale sessions before closing them and mark unresolved requests as locally discarded. The released `close` import returns no result and completes asynchronously: a transient unavailable response to reopening is retried on subsequent event/timer callbacks, but no failed utterance is replayed.
 
-`Each dart → Total` submits each eligible dart and then the total. `Total only` submits only the total after the first explicit removal marker. Clear/shrink alone never submits. The room is a Niles authority boundary, not a selected-satellite list.
+`Each dart → Total` submits each eligible dart and then the total. `Total only` submits only the total after the third-dart deadline or explicit takeout, whichever comes first; one- and two-dart collections require explicit takeout. Clear/shrink alone never submits, and a later takeout after deadline completion only resets the removal episode. The room is a Niles authority boundary, not a selected-satellite list.
 
 ## Verification limits
 
