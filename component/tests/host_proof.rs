@@ -489,6 +489,25 @@ impl Proof {
         )
     }
 
+    async fn policy_event(&self, readiness: &str, reason: &str) {
+        tokio::time::timeout(WAIT, async {
+            loop {
+                let surface = self
+                    .runtime
+                    .render("autodarts", "board", Context::default())
+                    .await
+                    .unwrap();
+                let rendered = format!("{surface:?}");
+                if rendered.contains(readiness) && rendered.contains(reason) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("guest processes the expected policy boundary");
+    }
+
     async fn finish(self, label: &str, forwarded: usize) {
         tokio::time::timeout(WAIT, async {
             loop {
@@ -548,33 +567,38 @@ async fn captured_replay(mode: &str, expected: &[&str], label: &str) {
 
     // Sending frames only acknowledges the socket write, not guest processing.
     // Observe the post-clear policy state before claiming prefix silence.
-    tokio::time::timeout(WAIT, async {
-        loop {
-            let surface = proof
-                .runtime
-                .render("autodarts", "board", Context::default())
-                .await
-                .unwrap();
-            let rendered = format!("{surface:?}");
-            if rendered.contains("Policy readiness: collecting (0 darts)")
-                && rendered.contains("InactiveMotion")
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("guest consumes the reconstructed prefix through its empty baseline");
+    proof
+        .policy_event("Policy readiness: collecting (0 darts)", "InactiveMotion")
+        .await;
     assert!(proof.host.trace.lock().requests.is_empty());
     assert!(proof.output.prepared.lock().is_empty());
-    for _ in expected {
-        proof.output.allow_one();
-    }
     let continuation = fixture_frames(false);
-    send(&mut socket, &continuation).await;
-    proof.host.submissions(expected.len()).await;
-    proof.host.terminals(expected.len()).await;
+    let mut submitted = 0;
+    for (index, frame) in continuation.iter().enumerate() {
+        // Expected boundaries of the separately labelled synthetic fixture.
+        // Serialize recording-output proof at real terminal acknowledgements;
+        // the burst scenario above separately verifies host replacement.
+        let emits = if mode == "total_only" {
+            matches!(index, 3 | 11 | 15)
+        } else {
+            matches!(index, 0..=3 | 7..=9 | 11..=15)
+        };
+        if emits {
+            proof.output.allow_one();
+        }
+        send(&mut socket, &[frame]).await;
+        if emits {
+            submitted += 1;
+            proof.host.terminals(submitted).await;
+        }
+    }
+    assert_eq!(submitted, expected.len());
+    proof
+        .policy_event(
+            "Policy readiness: collecting (0 darts)",
+            "BaselineEstablished",
+        )
+        .await;
     let expected_requests: Vec<_> = expected
         .iter()
         .map(|text| (*text, SpeechOutcome::Delivered))
