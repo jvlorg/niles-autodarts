@@ -535,6 +535,7 @@ fn poll_speech() {
                     }
                 }
                 pump_speech(runtime);
+                schedule_speech_progress(runtime);
             }
             Err(error) => {
                 runtime.speech_poll_error = Some(format!("Speech poll failed: {error:?}"));
@@ -548,7 +549,6 @@ fn cancel_deadline_timer(runtime: &mut Runtime) {
         timers::cancel(&id);
     }
 }
-
 fn reconcile_deadline_timer(runtime: &mut Runtime) {
     let desired = runtime.announcement_session.pending_total_deadline();
     if runtime
@@ -575,10 +575,10 @@ fn reconcile_deadline_timer(runtime: &mut Runtime) {
     match timers::after(&id, 1) {
         Ok(()) => runtime.deadline_timer = Some((token, id)),
         Err(error) => {
-            runtime.speech_submission_error =
-                Some(format!("Total deadline timer failed: {error:?}"));
-            runtime.announcement_session.connection_reset();
-            cancel_deadline_timer(runtime);
+            let message =
+                format!("Total deadline timer failed: {error:?}; speech requests discarded");
+            invalidate_speech(runtime, "total deadline timer failure");
+            runtime.speech_submission_error = Some(message);
         }
     }
 }

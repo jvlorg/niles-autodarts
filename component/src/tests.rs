@@ -23,6 +23,7 @@ fn setup(replies: impl IntoIterator<Item = Result<http::Response, http::HttpErro
     devices::reset();
     speech_stream::reset();
     websocket::reset();
+    test_host::niles::integration::timers::reset();
     config::set(
         "address",
         config::SettingValue::Text("board.local:3180".into()),
@@ -1038,6 +1039,70 @@ fn speech_enablement_without_announcement_intent_does_not_open_a_session() {
     config::set("speech_stream_enabled", config::SettingValue::Boolean(true));
     Plugin::init().unwrap();
     assert!(speech_stream::calls().opened_rooms.is_empty());
+}
+
+#[test]
+fn pending_speech_progress_timer_rearms_after_pending_poll() {
+    setup(initial(false));
+    enable_announcements("total_only");
+    Plugin::init().unwrap();
+    send_event(EMPTY_EVENT);
+    send_event(ONE_DART);
+    send_event(REMOVED);
+    let progress = test_host::niles::integration::timers::after_calls()
+        .into_iter()
+        .find(|(id, _)| id.starts_with("speech-progress:"))
+        .map(|(id, _)| id)
+        .expect("registered speech progress timer");
+    let request = speech_stream::calls().submitted_ids[0].1;
+    speech_stream::set_statuses(vec![
+        bindings::niles::integration::speech_stream::RequestStatus {
+            request,
+            outcome: bindings::niles::integration::speech_stream::Outcome::Pending,
+        },
+    ]);
+    Plugin::on_timer(progress.clone());
+    let registrations = test_host::niles::integration::timers::after_calls()
+        .into_iter()
+        .filter(|(id, _)| id == &progress)
+        .count();
+    assert_eq!(registrations, 2);
+    assert!(RUNTIME.with(|slot| {
+        slot.borrow().as_ref().is_some_and(|runtime| {
+            runtime.speech_progress_timer.as_deref() == Some(progress.as_str())
+        })
+    }));
+}
+
+#[test]
+fn deadline_timer_failure_discards_speech_generation() {
+    setup(initial(false));
+    enable_announcements("each_dart_then_total");
+    Plugin::init().unwrap();
+    send_event(EMPTY_EVENT);
+    send_event(ONE_DART);
+    let session = speech_stream::calls().submitted[0].0;
+    test_host::niles::integration::timers::fail_after(true);
+    send_event(TWO_DARTS);
+    send_event(
+        r#"{"type":"state","data":{"running":true,"numThrows":3,"throws":[{"segment":{"number":20,"multiplier":1}},{"segment":{"number":5,"multiplier":1}},{"segment":{"number":1,"multiplier":1}}]}}"#,
+    );
+    assert_eq!(speech_stream::calls().closed, [session]);
+    assert!(
+        render_text()
+            .iter()
+            .any(|line| line.contains("Total deadline timer failed"))
+    );
+    assert!(RUNTIME.with(|slot| {
+        slot.borrow().as_ref().is_some_and(|runtime| {
+            runtime.speech_pending.is_empty()
+                && runtime.speech_queue.is_empty()
+                && runtime.speech_in_flight.is_none()
+                && runtime.deadline_timer.is_none()
+        })
+    }));
+    send_event(REMOVED);
+    assert_eq!(speech_stream::calls().submitted.len(), 1);
 }
 
 #[test]

@@ -148,6 +148,12 @@ pub mod niles {
                 static CANCELLATIONS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
                 static FAIL_AFTER: RefCell<bool> = const { RefCell::new(false) };
             }
+            pub fn reset() {
+                CALLS.with(|slot| slot.borrow_mut().clear());
+                AFTER.with(|slot| slot.borrow_mut().clear());
+                CANCELLATIONS.with(|slot| slot.borrow_mut().clear());
+                FAIL_AFTER.with(|slot| *slot.borrow_mut() = false);
+            }
             pub fn every(id: &str, seconds: u32) -> Result<(), ()> {
                 CALLS.with(|slot| slot.borrow_mut().push((id.into(), seconds)));
                 Ok(())
