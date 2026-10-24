@@ -24,6 +24,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 const BASELINE: &str = r#"{"type":"state","data":{"running":true,"numThrows":0,"throws":[]}}"#;
+const INITIAL_RUNNING_DART: &str = r#"{"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"number":20,"multiplier":1}}]}}"#;
 const DART: &str = r#"{"type":"state","data":{"running":true,"numThrows":1,"throws":[{"segment":{"number":20,"multiplier":1}}]}}"#;
 const DART_TWO: &str = r#"{"type":"state","data":{"running":true,"numThrows":2,"throws":[{"segment":{"number":20,"multiplier":1}},{"segment":{"number":5,"multiplier":1}}]}}"#;
 const DART_THREE: &str = r#"{"type":"state","data":{"running":true,"numThrows":3,"throws":[{"segment":{"number":20,"multiplier":1}},{"segment":{"number":5,"multiplier":1}},{"segment":{"number":1,"multiplier":1}}]}}"#;
@@ -528,8 +529,9 @@ impl Proof {
         let mut socket = board.connected().await;
         if initial_running {
             // Session opening is authorized by a current running observation,
-            // not by init or WebSocket connection alone.
-            send(&mut socket, &[BASELINE]).await;
+            // not by init or WebSocket connection alone; keep its stale dart
+            // out of the score baseline.
+            send(&mut socket, &[INITIAL_RUNNING_DART]).await;
             host.live_room("living_room").await;
         }
         (
